@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Маршруты KMZ: дерево + карта</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+
+<style>
+:root{
+  --bg:#0b1120; --panel:#111827; --panel-2:#0f172a; --line:#1f2a3f;
+  --text:#e2e8f0; --muted:#7c8aa5; --accent:#38bdf8;
+  --switch:#fbbf24; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+  --shadow:0 4px 20px rgba(0,0,0,.35);
+}
+[data-theme="light"]{
+  --bg:#f7f9fc; --panel:#fff; --panel-2:#f1f5f9; --line:#e2e8f0;
+  --text:#0f172a; --muted:#64748b; --accent:#0284c7;
+  --ok:#15803d; --warn:#b45309; --err:#b91c1c;
+  --shadow:0 4px 20px rgba(15,23,42,.08);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+}
+button,input,select{font:inherit;color:inherit}
+
+.app{display:grid;grid-template-rows:auto 1fr;height:100vh}
+.topbar{
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  padding:10px 16px;background:var(--panel);
+  border-bottom:1px solid var(--line);box-shadow:var(--shadow);
+  position:relative;z-index:10;
+}
+.topbar h1{font-size:15px;margin:0 8px 0 0;font-weight:600}
+
+.main{display:grid;grid-template-columns:360px 1fr;min-height:0;overflow:hidden}
+.sidebar{
+  background:var(--panel-2);border-right:1px solid var(--line);
+  padding:14px;overflow:auto;min-width:0;
+}
+.content{position:relative;min-width:0;display:flex;flex-direction:column}
+#map{flex:1;min-height:0}
+.crumbs-bar{
+  padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line);
+  font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center;
+}
+.crumb{cursor:pointer;border-bottom:1px dashed transparent}
+.crumb:hover{border-color:var(--accent);color:var(--accent)}
+
+.btn{
+  background:var(--panel-2);border:1px solid var(--line);
+  padding:6px 11px;border-radius:8px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.icon{padding:6px 9px}
+.btn.primary{background:var(--accent);color:#0b1120;border-color:var(--accent);font-weight:600}
+.btn.primary:hover{filter:brightness(1.08);color:#0b1120}
+.input{
+  background:var(--panel-2);border:1px solid var(--line);
+  padding:6px 10px;border-radius:8px;outline:none;min-width:200px;
+}
+.input:focus{border-color:var(--accent)}
+.file-btn{
+  background:var(--panel-2);border:1px solid var(--line);
+  padding:6px 11px;border-radius:8px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.file-btn:hover{border-color:var(--accent);color:var(--accent)}
+.file-btn input{display:none}
+
+.stats{
+  display:flex;gap:12px;flex-wrap:wrap;align-items:center;
+  margin-left:auto;color:var(--muted);font-size:12.5px;
+}
+.stat b{color:var(--text);font-weight:600}
+
+.side-title{
+  font-size:11px;text-transform:uppercase;letter-spacing:1.2px;
+  color:var(--muted);margin:14px 0 6px;font-weight:600;
+}
+.side-title:first-child{margin-top:0}
+
+.filter-item{
+  display:flex;align-items:center;gap:8px;
+  padding:5px 8px;border-radius:6px;cursor:pointer;
+  user-select:none;font-size:13px;
+}
+.filter-item:hover{background:var(--panel)}
+.filter-item input{accent-color:var(--accent)}
+.filter-item .cnt{margin-left:auto;color:var(--muted);font-size:12px}
+
+#filter-branch-list .filter-item{align-items:flex-start}
+#filter-branch-list .filter-item .name{
+  word-break:break-all;line-height:1.25;
+  color:var(--switch);font-weight:600;font-size:12.5px;
+}
+
+ul.tree{list-style:none;margin:0;padding-left:16px;border-left:1px dashed var(--line)}
+ul.tree.root{border-left:none;padding-left:0}
+li{margin:1px 0}
+.node{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:3px 8px;border-radius:8px;cursor:pointer;
+  user-select:none;white-space:nowrap;
+}
+.node:hover{background:var(--panel)}
+.node.selected{background:var(--panel);box-shadow:inset 0 0 0 1px var(--accent)}
+.node.highlight{background:rgba(56,189,248,.15);box-shadow:inset 0 0 0 1px var(--accent)}
+.toggle{display:inline-block;width:14px;text-align:center;color:var(--muted);font-size:11px}
+.icon{opacity:.9;font-size:13px}
+.badge{
+  background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;padding:1px 7px;font-size:10.5px;color:var(--muted);
+}
+.switch{color:var(--switch);font-weight:600}
+
+li.collapsed > ul{display:none}
+.hidden{display:none !important}
+
+.route-row{
+  padding-left:22px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+  font-size:12px;
+}
+.route-row .k{color:var(--muted)}
+.route-row .color-dot{
+  width:10px;height:10px;border-radius:50%;border:1px solid rgba(255,255,255,.3);
+}
+.route-row .zoom{
+  margin-left:auto;cursor:pointer;color:var(--muted);font-size:12px;
+  opacity:0;transition:opacity .15s;
+}
+.route-row:hover .zoom{opacity:1}
+.route-row .zoom:hover{color:var(--accent)}
+
+.route-popup{font-size:12px;line-height:1.45;min-width:240px}
+.route-popup b{color:var(--accent)}
+.route-popup .zoom-btn{
+  margin-top:6px;display:inline-block;background:var(--accent);
+  color:#0b1120;padding:3px 9px;border-radius:6px;cursor:pointer;
+  font-size:11px;font-weight:600;
+}
+
+.leaflet-popup-content-wrapper{
+  background:var(--panel);color:var(--text);
+  border:1px solid var(--line);
+}
+.leaflet-popup-tip{background:var(--panel);border:1px solid var(--line)}
+
+.diag{
+  background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:8px 11px;margin-bottom:10px;
+  font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
+  color:var(--muted);white-space:pre-wrap;line-height:1.5;
+}
+
+.search-hit{ animation:pulse 1.2s infinite; pointer-events:auto; }
+@keyframes pulse{
+  0%   { stroke-opacity:1; stroke-width:3; }
+  50%  { stroke-opacity:.4; stroke-width:6; }
+  100% { stroke-opacity:1; stroke-width:3; }
+}
+
+#branch-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+#branch-actions .btn{flex:1}
+
+@media (max-width:860px){
+  .main{grid-template-columns:1fr;grid-template-rows:45% 55%}
+  .sidebar{border-right:none;border-bottom:1px solid var(--line)}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <h1>🛤️ Маршруты KMZ: дерево + карта</h1>
+
+    <label class="file-btn">📂 Загрузить KMZ
+      <input type="file" id="fileKmz" accept=".kmz,.kml" multiple>
+    </label>
+
+    <input class="input" id="search" placeholder="🔎 Поиск: имя, файл, ветвь…">
+
+    <button class="btn" id="expand">Развернуть</button>
+    <button class="btn" id="collapse">Свернуть</button>
+    <button class="btn icon" id="theme" title="Тема">🌙</button>
+
+    <div class="stats">
+      <span class="stat">🌿 <b id="s-branches">0</b> веток</span>
+      <span class="stat">🛤️ <b id="s-routes">0</b> маршрутов</span>
+      <span class="stat">📍 <b id="s-points">0</b> точек</span>
+      <span class="stat">👁 <b id="s-visible">0</b> видимых</span>
+      <span class="stat">🔎 <b id="s-found">—</b></span>
+    </div>
+  </header>
+
+  <div class="main">
+    <aside class="sidebar">
+      <div class="diag" id="diag">Выберите один или несколько KMZ файлов кнопкой «Загрузить KMZ» в шапке.</div>
+
+      <div class="side-title">Ветки</div>
+      <input class="input" id="filter-branch" placeholder="Фильтр веток…"
+             style="width:100%;margin-bottom:6px">
+      <div id="filter-branch-list"></div>
+
+      <div class="side-title">Объединение в ветвь</div>
+      <input class="input" id="branchName" placeholder="Название ветви"
+             style="width:100%">
+      <div id="branch-actions">
+        <button class="btn primary" id="merge-btn">🚂 Объединить выбранные</button>
+      </div>
+
+      <div class="side-title">Действия</div>
+      <button class="btn" id="reset-filters" style="width:100%">Сбросить фильтры</button>
+      <button class="btn" id="export-btn" style="width:100%;margin-top:6px">💾 Скачать KMZ (видимые)</button>
+      <label class="filter-item" style="margin-top:6px">
+        <input type="checkbox" id="groupByBranch" checked>
+        <span>Группировать по ветвям при экспорте</span>
+      </label>
+
+      <div class="side-title">Дерево маршрутов</div>
+      <ul class="tree root" id="tree"></ul>
+    </aside>
+
+    <main class="content">
+      <div class="crumbs-bar" id="crumbs">
+        <span class="crumb">Все ветки</span>
+      </div>
+      <div id="map"></div>
+    </main>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+   0. ХЕЛПЕРЫ
+   ========================================================================== */
+const $   = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function stringToColor(str){
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  const hue = ((hash % 360) + 360) % 360;
+  return 'hsl(' + hue + ', 70%, 45%)';
+}
+
+function simplify(points, tolerance = 0.00003){
+  if (!points || points.length < 3) return points || [];
+  const out = [points[0]];
+  let last = points[0];
+  const t2 = tolerance * tolerance;
+  for (let i = 1; i < points.length - 1; i++){
+    const p = points[i];
+    const dx = p[0] - last[0], dy = p[1] - last[1];
+    if (dx*dx + dy*dy >= t2){ out.push(p); last = p; }
+  }
+  out.push(points[points.length - 1]);
+  return out;
+}
+
+/* ==========================================================================
+   1. СОСТОЯНИЕ
+   ========================================================================== */
+const State = {
+  routes: [],                // [{id,name,points,branch,visible,filename}]
+  byBranch: new Map(),       // branch → [route,...]
+  filters: { branch: new Set() }
+};
+
+let searchMode = false;
+let searchHighlightLayer = null;
+
+/* ==========================================================================
+   2. КАРТА
+   ========================================================================== */
+const map = L.map('map', {
+  preferCanvas: true,
+  zoomSnap: 0.5,
+  wheelPxPerZoomLevel: 120
+}).setView([55.75, 37.61], 8);
+
+// Подложки без API-ключей
+const baseLayers = {
+  'OSM Hot': L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+    subdomains: 'abc', maxZoom: 19,
+    attribution: '© OpenStreetMap contributors, Tiles: HOT'
+  }),
+  'OSM DE': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap contributors'
+  }),
+  'Esri Улицы': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, attribution: 'Tiles © Esri'
+  }),
+  'Esri Спутник': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, attribution: 'Tiles © Esri'
+  }),
+  'OpenTopoMap': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    maxZoom: 17, attribution: '© OpenStreetMap, SRTM | © OpenTopoMap'
+  })
+};
+baseLayers['OSM Hot'].addTo(map);
+L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
+
+const layerById = {};      // id → L.Polyline
+
+/* ==========================================================================
+   3. ПОПАПЫ
+   ========================================================================== */
+function buildPopup(r){
+  const color = r.branch
+    ? stringToColor('branch_' + r.branch)
+    : stringToColor('route_' + r.id);
+  const pts = r.points ? r.points.length : 0;
+  const vis = r.visible !== false ? 'показан' : 'скрыт';
+  return `
+    <div class="route-popup">
+      <div><b>Маршрут:</b> ${esc(r.name)}</div>
+      <div><b>Ветвь:</b> ${esc(r.branch || '—')}</div>
+      <div><b>Файл:</b> ${esc(r.filename)}</div>
+      <div><b>Точек:</b> ${pts}</div>
+      <div><b>Статус:</b> <span style="color:${color}">${vis}</span></div>
+      <div class="zoom-btn" onclick="window.__zoomToRoute(${r.id})">📍 Показать в дереве</div>
+    </div>`;
+}
+
+function bindHoverPopup(layer, r){
+  layer.bindPopup(buildPopup(r), { closeButton: false, offset: [0, -5] });
+  layer.on('mouseover', function(){ this.openPopup(); });
+  layer.on('mouseout',  function(){ this.closePopup(); });
+}
+
+window.__zoomToRoute = function(id){
+  const r = State.routes.find(x => x.id === id);
+  if (!r || !r.points.length) return;
+  const b = L.latLngBounds(r.points);
+  map.fitBounds(b.pad(0.15));
+  highlightTreeByRoute(id);
+};
+
+/* ==========================================================================
+   4. ОТРИСОВКА КАРТЫ
+   ========================================================================== */
+function rebuildMapLayers(){
+  Object.values(layerById).forEach(l => map.removeLayer(l));
+  Object.keys(layerById).forEach(k => delete layerById[k]);
+
+  State.routes.forEach(r => {
+    const color = r.branch
+      ? stringToColor('branch_' + r.branch)
+      : stringToColor('route_' + r.id);
+    const pts = simplify(r.points);
+    const line = L.polyline(pts, {
+      color, weight: 3, opacity: 0.85, smoothFactor: 2
+    });
+    bindHoverPopup(line, r);
+    layerById[r.id] = line;
+  });
+
+  applyFilters();
+}
+
+function routePasses(r){
+  const f = State.filters;
+  if (f.branch.size && !f.branch.has(r.branch || 'Без ветви')) return false;
+  return true;
+}
+
+function applyFilters(){
+  Object.entries(layerById).forEach(([id, layer]) => {
+    const r = State.routes.find(x => x.id === String(id) || x.id === Number(id));
+    if (!r) return;
+    const ok = routePasses(r) && r.visible !== false;
+    if (searchMode) {
+      if (map.hasLayer(layer)) map.removeLayer(layer);
+    } else if (ok) {
+      if (!map.hasLayer(layer)) layer.addTo(map);
+    } else {
+      if (map.hasLayer(layer)) map.removeLayer(layer);
+    }
+  });
+  renderTree();
+  updateStats();
+}
+
+/* ==========================================================================
+   5. ДЕРЕВО
+   ========================================================================== */
+function renderTree(){
+  const treeEl = $('tree');
+  const frag = document.createDocumentFragment();
+
+  State.byBranch.clear();
+  State.routes.forEach(r => {
+    const b = r.branch || 'Без ветви';
+    if (!State.byBranch.has(b)) State.byBranch.set(b, []);
+    State.byBranch.get(b).push(r);
+  });
+
+  [...State.byBranch.keys()].sort().forEach(branch => {
+    const routes = State.byBranch.get(branch).filter(routePasses);
+    if (!routes.length) return;
+
+    const li = document.createElement('li');
+    const row = document.createElement('div');
+    row.className = 'node';
+    row.dataset.kind = 'branch';
+    row.dataset.branch = branch;
+
+    const branchColor = stringToColor('branch_' + branch);
+    row.innerHTML =
+      `<span class="toggle">▾</span>
+       <span class="icon">🌿</span>
+       <span class="switch" style="color:${branchColor}">${esc(branch)}</span>
+       <span class="badge">${routes.length}</span>`;
+    li.appendChild(row);
+
+    const ul = document.createElement('ul');
+    ul.className = 'tree';
+
+    routes.forEach(r => {
+      const aLi = document.createElement('li');
+      const aDiv = document.createElement('div');
+      aDiv.className = 'node route-row';
+      aDiv.dataset.kind = 'route';
+      aDiv.dataset.id = r.id;
+      aDiv.dataset.search =
+        `${r.name} ${r.filename} ${r.branch || ''} ${r.id}`.toLowerCase();
+
+      const dotColor = r.branch
+        ? stringToColor('branch_' + r.branch)
+        : stringToColor('route_' + r.id);
+
+      aDiv.innerHTML =
+        `<span class="color-dot" style="background:${dotColor}"></span>
+         <span>${esc(r.name)}</span>
+         <span class="k">Точек:</span><span>${r.points.length}</span>
+         <span class="k">Ветвь:</span><span style="color:${branchColor}">${esc(r.branch || '—')}</span>
+         <span class="zoom" title="Показать на карте" data-zoom="${r.id}">📍</span>`;
+      aLi.appendChild(aDiv);
+      ul.appendChild(aLi);
+    });
+
+    li.appendChild(ul);
+    frag.appendChild(li);
+  });
+
+  treeEl.replaceChildren(frag);
+  renderBranchFilter();
+}
+
+function highlightTreeByRoute(id){
+  document.querySelectorAll('.node.highlight')
+    .forEach(n => n.classList.remove('highlight'));
+  const node = document.querySelector(`.node.route-row[data-id="${id}"]`);
+  if (!node) return;
+
+  let li = node.parentElement;
+  while (li && li.id !== 'tree'){
+    li.classList.remove('collapsed','hidden');
+    const t = li.querySelector(':scope > .node .toggle');
+    if (t) t.textContent = '▾';
+    li = li.parentElement?.closest('li');
+  }
+  node.classList.add('highlight');
+  node.scrollIntoView({ block:'center', behavior:'smooth' });
+}
+
+/* ==========================================================================
+   6. СТАТИСТИКА / ФИЛЬТР ВЕТОК
+   ========================================================================== */
+function updateStats(){
+  $('s-branches').textContent = State.byBranch.size;
+  $('s-routes').textContent   = State.routes.length;
+  const totalPts = State.routes.reduce((s,r) => s + r.points.length, 0);
+  $('s-points').textContent   = totalPts;
+  $('s-visible').textContent  = State.routes.filter(r => r.visible !== false).length;
+}
+
+function renderBranchFilter(){
+  const el = $('filter-branch-list');
+  el.replaceChildren();
+  [...State.byBranch.keys()].sort().forEach(b => {
+    const cnt = State.byBranch.get(b).length;
+    const l = document.createElement('label');
+    l.className = 'filter-item';
+    l.dataset.branch = b.toLowerCase();
+    const color = stringToColor('branch_' + b);
+    l.innerHTML =
+      `<input type="checkbox" data-filter="branch" value="${esc(b)}"
+              ${State.filters.branch.has(b) ? 'checked' : ''}>
+       <span class="name" style="color:${color}">${esc(b)}</span>
+       <span class="cnt">${cnt}</span>`;
+    el.appendChild(l);
+  });
+}
+
+const showDiag = msg => { $('diag').innerHTML = msg; };
+
+/* ==========================================================================
+   7. ЗАГРУЗКА KMZ / ПЕРЕСБОРКА
+   ========================================================================== */
+async function uploadFiles(fileList){
+  if (!fileList.length) return;
+  showDiag('Загрузка ' + fileList.length + ' файлов…');
+
+  const fd = new FormData();
+  for (const f of fileList) fd.append('files', f);
+
+  try{
+    const res = await fetch('/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    await loadRoutes();
+    showDiag(`Загружено файлов: ${fileList.length}\n` +
+             `Добавлено маршрутов: ${data.added.length}\n` +
+             `Всего в проекте: ${data.total}`);
+  }catch(err){
+    showDiag('Ошибка загрузки: ' + err.message);
+  }
+}
+
+async function loadRoutes(){
+  const res = await fetch('/routes');
+  State.routes = await res.json();
+  rebuildMapLayers();
+  fitAll();
+}
+
+let __fittedOnce = false;
+function fitAll(){
+  if (__fittedOnce) return;
+  const all = [];
+  State.routes.forEach(r => r.points.forEach(p => all.push(p)));
+  if (all.length) {
+    map.fitBounds(L.latLngBounds(all).pad(0.08));
+    __fittedOnce = true;
+  }
+}
+
+/* ==========================================================================
+   8. ОПЕРАЦИИ С МАРШРУТАМИ
+   ========================================================================== */
+async function renameRoute(id, name){
+  await fetch('/route/' + id, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name })
+  });
+  await loadRoutes();
+}
+
+async function setBranch(id, branch){
+  await fetch('/route/' + id, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ branch })
+  });
+  await loadRoutes();
+}
+
+async function toggleVisible(id, visible){
+  await fetch('/route/' + id, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ visible })
+  });
+  const r = State.routes.find(x => x.id === id);
+  if (r) r.visible = visible;
+  applyFilters();
+}
+
+async function deleteRoute(id){
+  if (!confirm('Удалить маршрут?')) return;
+  await fetch('/route/' + id, { method:'DELETE' });
+  await loadRoutes();
+}
+
+function getSelectedIds(){
+  return Array.from(document.querySelectorAll('.selectBox:checked'))
+              .map(el => parseInt(el.dataset.id, 10));
+}
+
+async function mergeSelected(){
+  const ids = getSelectedIds();
+  const name = $('branchName').value.trim() || 'Новая ветвь';
+  if (ids.length < 2) { alert('Отметьте минимум 2 маршрута галочками в дереве'); return; }
+
+  showDiag('Объединение…');
+  const res = await fetch('/merge', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ ids, name })
+  });
+  if (!res.ok){ alert('Ошибка объединения'); return; }
+  await loadRoutes();
+  $('branchName').value = '';
+  showDiag('Ветвь создана: ' + name);
+}
+
+async function exportKmz(){
+  const visibleIds = State.routes.filter(r => r.visible !== false).map(r => r.id);
+  if (!visibleIds.length){ alert('Нет видимых маршрутов'); return; }
+
+  showDiag('Экспорт KMZ…');
+  const group = $('groupByBranch').checked;
+  const res = await fetch('/export', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ ids: visibleIds, group_by_branch: group })
+  });
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'routes_export.kmz';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showDiag('Файл сохранён');
+}
+
+/* ==========================================================================
+   9. ПОИСК
+   ========================================================================== */
+function highlightMarkersByQuery(q){
+  if (searchHighlightLayer){
+    map.removeLayer(searchHighlightLayer);
+    searchHighlightLayer = null;
+  }
+  if (!q){
+    searchMode = false;
+    applyFilters();
+    return 0;
+  }
+
+  const hits = State.routes.filter(r =>
+    routePasses(r) &&
+    `${r.name} ${r.filename} ${r.branch || ''} ${r.id}`
+      .toLowerCase().includes(q)
+  );
+
+  searchMode = true;
+  Object.values(layerById).forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
+
+  const group = L.layerGroup();
+  hits.forEach(r => {
+    const pts = simplify(r.points);
+    const line = L.polyline(pts, {
+      color:'#38bdf8', weight:3, opacity:1,
+      className:'search-hit'
+    });
+    line.bindPopup(buildPopup(r), { closeButton:false });
+    line.on('mouseover', function(){ this.openPopup(); });
+    line.on('mouseout',  function(){ this.closePopup(); });
+    line.addTo(group);
+  });
+  group.addTo(map);
+  searchHighlightLayer = group;
+
+  if (hits.length){
+    const all = [];
+    hits.forEach(r => r.points.forEach(p => all.push(p)));
+    map.fitBounds(L.latLngBounds(all).pad(0.15));
+  }
+  return hits.length;
+}
+
+function applySearch(q){
+  const all = document.querySelectorAll('#tree li');
+  all.forEach(li => li.classList.remove('hidden'));
+  document.querySelectorAll('#tree .node.highlight')
+    .forEach(n => n.classList.remove('highlight'));
+
+  if (!q){
+    highlightMarkersByQuery('');
+    $('s-found').textContent = '—';
+    return;
+  }
+
+  const matched = [];
+  document.querySelectorAll('#tree .route-row').forEach(n => {
+    if ((n.dataset.search || '').includes(q)) matched.push(n);
+  });
+
+  if (matched.length){
+    all.forEach(li => li.classList.add('hidden'));
+    matched.forEach(n => {
+      n.classList.add('highlight');
+      let li = n.parentElement;
+      while (li && li.id !== 'tree'){
+        li.classList.remove('hidden','collapsed');
+        const t = li.querySelector(':scope > .node .toggle');
+        if (t) t.textContent = '▾';
+        li = li.parentElement?.closest('li');
+      }
+      if (matched.length === 1){
+        n.scrollIntoView({ block:'center', behavior:'smooth' });
+      }
+    });
+  }
+
+  $('s-found').textContent = highlightMarkersByQuery(q);
+}
+
+/* ==========================================================================
+   10. СОБЫТИЯ
+   ========================================================================== */
+$('fileKmz').addEventListener('change', e => {
+  uploadFiles(e.target.files).then(() => { e.target.value = ''; });
+});
+
+document.addEventListener('change', e => {
+  const input = e.target.closest('input[data-filter]');
+  if (!input) return;
+  const set = State.filters[input.dataset.filter];
+  if (input.checked) set.add(input.value); else set.delete(input.value);
+  applyFilters();
+});
+
+$('reset-filters').addEventListener('click', () => {
+  State.filters.branch.clear();
+  document.querySelectorAll('input[data-filter]').forEach(i => i.checked = false);
+  $('filter-branch').value = '';
+  document.querySelectorAll('#filter-branch-list .filter-item')
+    .forEach(el => el.style.display = '');
+  applyFilters();
+});
+
+$('expand').addEventListener('click', () => {
+  document.querySelectorAll('#tree li.collapsed')
+    .forEach(li => li.classList.remove('collapsed'));
+  document.querySelectorAll('#tree .toggle').forEach(t => t.textContent = '▾');
+});
+$('collapse').addEventListener('click', () => {
+  document.querySelectorAll('#tree li').forEach(li => li.classList.add('collapsed'));
+  document.querySelectorAll('#tree .toggle').forEach(t => t.textContent = '▸');
+});
+
+$('tree').addEventListener('click', e => {
+  const zoom = e.target.closest('.zoom');
+  if (zoom){
+    e.stopPropagation();
+    window.__zoomToRoute(parseInt(zoom.dataset.zoom, 10));
+    return;
+  }
+  const node = e.target.closest('.node');
+  if (!node) return;
+
+  const li = node.parentElement;
+  if (li && li.tagName === 'LI' && li.querySelector(':scope > ul')){
+    li.classList.toggle('collapsed');
+    const t = node.querySelector('.toggle');
+    if (t) t.textContent = li.classList.contains('collapsed') ? '▸' : '▾';
+  }
+
+  document.querySelectorAll('.node.selected')
+    .forEach(n => n.classList.remove('selected'));
+  node.classList.add('selected');
+
+  if (node.dataset.kind === 'branch'){
+    const rs = State.byBranch.get(node.dataset.branch) || [];
+    const all = [];
+    rs.forEach(r => r.points.forEach(p => all.push(p)));
+    if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.15));
+    $('crumbs').innerHTML =
+      `<span class="crumb">Все ветки</span> › <b>${esc(node.dataset.branch)}</b>`;
+  } else if (node.dataset.kind === 'route'){
+    const r = State.routes.find(x => String(x.id) === node.dataset.id);
+    if (r){
+      map.fitBounds(L.latLngBounds(r.points).pad(0.15));
+      $('crumbs').innerHTML =
+        `<span class="crumb">Все ветки</span> › <b>${esc(r.name)}</b>`;
+    }
+  }
+});
+
+$('merge-btn').addEventListener('click', mergeSelected);
+$('export-btn').addEventListener('click', exportKmz);
+
+/* Поиск */
+let searchRaf = 0;
+$('search').addEventListener('input', e => {
+  cancelAnimationFrame(searchRaf);
+  const q = e.target.value.trim().toLowerCase();
+  searchRaf = requestAnimationFrame(() => applySearch(q));
+});
+
+/* Фильтр веток в сайдбаре */
+$('filter-branch').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll('#filter-branch-list .filter-item').forEach(el => {
+    el.style.display = el.dataset.branch.includes(q) ? '' : 'none';
+  });
+});
+
+/* Тема */
+const themeBtn = $('theme');
+function applyTheme(t){
+  document.documentElement.dataset.theme = t;
+  themeBtn.textContent = t === 'light' ? '☀️' : '🌙';
+  try { localStorage.setItem('kmz-theme', t); } catch(_){}
+}
+applyTheme(localStorage.getItem('kmz-theme') || 'dark');
+themeBtn.addEventListener('click', () =>
+  applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'));
+
+/* ==========================================================================
+   11. СТАРТ
+   ========================================================================== */
+showDiag(
+  '👋 Добро пожаловать!\n' +
+  'Выберите один или несколько .kmz файлов кнопкой в шапке.\n\n' +
+  'После загрузки:\n' +
+  '  • все маршруты появятся на карте;\n' +
+  '  • можно переименовывать, скрывать, объединять в ветви;\n' +
+  '  • скачать итоговый KMZ по кнопке «Скачать KMZ (видимые)».'
+);
+
+loadRoutes();
+</script>
+</body>
+</html>
