@@ -1,833 +1,978 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
+<title>KMZ Routes Viewer</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Маршруты KMZ: дерево + карта</title>
-
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
-
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-:root{
-  --bg:#0b1120; --panel:#111827; --panel-2:#0f172a; --line:#1f2a3f;
-  --text:#e2e8f0; --muted:#7c8aa5; --accent:#38bdf8;
-  --switch:#fbbf24; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
-  --shadow:0 4px 20px rgba(0,0,0,.35);
-}
-[data-theme="light"]{
-  --bg:#f7f9fc; --panel:#fff; --panel-2:#f1f5f9; --line:#e2e8f0;
-  --text:#0f172a; --muted:#64748b; --accent:#0284c7;
-  --ok:#15803d; --warn:#b45309; --err:#b91c1c;
-  --shadow:0 4px 20px rgba(15,23,42,.08);
-}
-*{box-sizing:border-box}
-html,body{height:100%}
-body{
-  margin:0;background:var(--bg);color:var(--text);
-  font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
-}
-button,input,select{font:inherit;color:inherit}
+  :root {
+    --bg: #ffffff;
+    --panel: #f5f6f8;
+    --border: #d8dbe0;
+    --text: #1c1e21;
+    --muted: #6b7280;
+    --accent: #468cff;
+    --hover: #e9eefb;
+  }
+  body.dark {
+    --bg: #1b1d21;
+    --panel: #24272c;
+    --border: #34383f;
+    --text: #e6e8eb;
+    --muted: #9aa1ab;
+    --accent: #6aa1ff;
+    --hover: #2e3440;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  body { background: var(--bg); color: var(--text); overflow: hidden; }
 
-.app{display:grid;grid-template-rows:auto 1fr;height:100vh}
-.topbar{
-  display:flex;flex-wrap:wrap;gap:10px;align-items:center;
-  padding:10px 16px;background:var(--panel);
-  border-bottom:1px solid var(--line);box-shadow:var(--shadow);
-  position:relative;z-index:10;
-}
-.topbar h1{font-size:15px;margin:0 8px 0 0;font-weight:600}
+  #app { display: flex; height: 100vh; }
 
-.main{display:grid;grid-template-columns:360px 1fr;min-height:0;overflow:hidden}
-.sidebar{
-  background:var(--panel-2);border-right:1px solid var(--line);
-  padding:14px;overflow:auto;min-width:0;
-}
-.content{position:relative;min-width:0;display:flex;flex-direction:column}
-#map{flex:1;min-height:0}
-.crumbs-bar{
-  padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line);
-  font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center;
-}
-.crumb{cursor:pointer;border-bottom:1px dashed transparent}
-.crumb:hover{border-color:var(--accent);color:var(--accent)}
+  #sidebar {
+    width: 380px; min-width: 260px; max-width: 640px;
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; resize: horizontal; overflow: hidden;
+  }
 
-.btn{
-  background:var(--panel-2);border:1px solid var(--line);
-  padding:6px 11px;border-radius:8px;cursor:pointer;
-  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
-}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn.icon{padding:6px 9px}
-.btn.primary{background:var(--accent);color:#0b1120;border-color:var(--accent);font-weight:600}
-.btn.primary:hover{filter:brightness(1.08);color:#0b1120}
-.input{
-  background:var(--panel-2);border:1px solid var(--line);
-  padding:6px 10px;border-radius:8px;outline:none;min-width:200px;
-}
-.input:focus{border-color:var(--accent)}
-.file-btn{
-  background:var(--panel-2);border:1px solid var(--line);
-  padding:6px 11px;border-radius:8px;cursor:pointer;
-  display:inline-flex;align-items:center;gap:6px;
-}
-.file-btn:hover{border-color:var(--accent);color:var(--accent)}
-.file-btn input{display:none}
+  #toolbar {
+    padding: 8px; display: flex; flex-wrap: wrap; gap: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  #toolbar button {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer;
+  }
+  #toolbar button:hover { background: var(--hover); }
 
-.stats{
-  display:flex;gap:12px;flex-wrap:wrap;align-items:center;
-  margin-left:auto;color:var(--muted);font-size:12.5px;
-}
-.stat b{color:var(--text);font-weight:600}
+  #searchWrap { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  #search {
+    width: 100%; padding: 6px 8px; font-size: 13px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+  }
 
-.side-title{
-  font-size:11px;text-transform:uppercase;letter-spacing:1.2px;
-  color:var(--muted);margin:14px 0 6px;font-weight:600;
-}
-.side-title:first-child{margin-top:0}
+  #mergeControls {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); align-items: center;
+  }
+  #mergeControls input {
+    flex: 1; min-width: 120px; padding: 4px 6px; font-size: 12px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  #mergeControls button {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer;
+  }
+  #mergeControls button:hover { background: var(--hover); }
 
-.filter-item{
-  display:flex;align-items:center;gap:8px;
-  padding:5px 8px;border-radius:6px;cursor:pointer;
-  user-select:none;font-size:13px;
-}
-.filter-item:hover{background:var(--panel)}
-.filter-item input{accent-color:var(--accent)}
-.filter-item .cnt{margin-left:auto;color:var(--muted);font-size:12px}
+  #pane-tree { flex: 1; overflow: auto; padding: 8px; }
 
-#filter-branch-list .filter-item{align-items:flex-start}
-#filter-branch-list .filter-item .name{
-  word-break:break-all;line-height:1.25;
-  color:var(--switch);font-weight:600;font-size:12.5px;
-}
+  /* ---------- Folder tree ---------- */
+  .folder-row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 6px; border-radius: 4px; font-size: 13px;
+    user-select: none; cursor: pointer;
+  }
+  .folder-row:hover { background: var(--hover); }
+  .folder-row.drop-target {
+    background: rgba(70,140,255,.25);
+    outline: 1px dashed var(--accent);
+  }
+  .folder-toggle {
+    width: 12px; color: var(--muted); font-size: 10px;
+    text-align: center; cursor: pointer;
+  }
+  .folder-cb { margin: 0; cursor: pointer; accent-color: var(--accent); }
+  .folder-name {
+    font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .folder-count { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .folder-actions { display: none; margin-left: auto; gap: 2px; }
+  .folder-row:hover .folder-actions { display: inline-flex; }
+  .folder-actions button {
+    background: none; border: none; color: var(--text);
+    cursor: pointer; padding: 0 3px; opacity: .75; font-size: 12px;
+  }
+  .folder-actions button:hover { opacity: 1; }
+  .folder-children { margin-left: 14px; }
+  .folder-children.collapsed { display: none; }
 
-ul.tree{list-style:none;margin:0;padding-left:16px;border-left:1px dashed var(--line)}
-ul.tree.root{border-left:none;padding-left:0}
-li{margin:1px 0}
-.node{
-  display:inline-flex;align-items:center;gap:6px;
-  padding:3px 8px;border-radius:8px;cursor:pointer;
-  user-select:none;white-space:nowrap;
-}
-.node:hover{background:var(--panel)}
-.node.selected{background:var(--panel);box-shadow:inset 0 0 0 1px var(--accent)}
-.node.highlight{background:rgba(56,189,248,.15);box-shadow:inset 0 0 0 1px var(--accent)}
-.toggle{display:inline-block;width:14px;text-align:center;color:var(--muted);font-size:11px}
-.icon{opacity:.9;font-size:13px}
-.badge{
-  background:var(--panel);border:1px solid var(--line);
-  border-radius:10px;padding:1px 7px;font-size:10.5px;color:var(--muted);
-}
-.switch{color:var(--switch);font-weight:600}
+  /* ---------- Route row ---------- */
+  .route-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 6px; border-radius: 4px; font-size: 13px;
+    user-select: none;
+  }
+  .route-row:hover { background: var(--hover); }
+  .route-row.dragging { opacity: .5; }
+  .route-row input[type=checkbox] { margin: 0; cursor: pointer; accent-color: var(--accent); }
+  .route-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .route-actions { display: none; gap: 2px; }
+  .route-row:hover .route-actions { display: inline-flex; }
+  .route-actions button {
+    background: none; border: none; color: var(--text);
+    cursor: pointer; padding: 0 3px; opacity: .7; font-size: 12px;
+  }
+  .route-actions button:hover { opacity: 1; }
+  .route-row.merge-marked { background: rgba(70,140,255,.15); }
 
-li.collapsed > ul{display:none}
-.hidden{display:none !important}
+  /* ---------- Map ---------- */
+  #mapWrap { flex: 1; position: relative; }
+  #map { width: 100%; height: 100%; background: var(--panel); }
+  body.dark #map { background: #1b1d21; }
 
-.route-row{
-  padding-left:22px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;
-  font-size:12px;
-}
-.route-row .k{color:var(--muted)}
-.route-row .color-dot{
-  width:10px;height:10px;border-radius:50%;border:1px solid rgba(255,255,255,.3);
-}
-.route-row .zoom{
-  margin-left:auto;cursor:pointer;color:var(--muted);font-size:12px;
-  opacity:0;transition:opacity .15s;
-}
-.route-row:hover .zoom{opacity:1}
-.route-row .zoom:hover{color:var(--accent)}
+  #isolationBadge {
+    position: absolute; top: 10px; left: 50px; z-index: 500;
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); padding: 4px 8px; border-radius: 4px;
+    font-size: 12px; display: none; align-items: center; gap: 6px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.15);
+  }
+  #isolationBadge button {
+    background: none; border: none; color: var(--text);
+    cursor: pointer; font-size: 14px; line-height: 1;
+  }
 
-.route-popup{font-size:12px;line-height:1.45;min-width:240px}
-.route-popup b{color:var(--accent)}
-.route-popup .zoom-btn{
-  margin-top:6px;display:inline-block;background:var(--accent);
-  color:#0b1120;padding:3px 9px;border-radius:6px;cursor:pointer;
-  font-size:11px;font-weight:600;
-}
+  #dropHint {
+    position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+    background: rgba(70,140,255,.15);
+    border: 3px dashed var(--accent);
+    display: none; align-items: center; justify-content: center;
+    font-size: 22px; color: var(--accent); font-weight: 600;
+  }
+  #dropHint.visible { display: flex; }
 
-.leaflet-popup-content-wrapper{
-  background:var(--panel);color:var(--text);
-  border:1px solid var(--line);
-}
-.leaflet-popup-tip{background:var(--panel);border:1px solid var(--line)}
-
-.diag{
-  background:var(--panel);border:1px solid var(--line);
-  border-radius:8px;padding:8px 11px;margin-bottom:10px;
-  font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
-  color:var(--muted);white-space:pre-wrap;line-height:1.5;
-}
-
-.search-hit{ animation:pulse 1.2s infinite; pointer-events:auto; }
-@keyframes pulse{
-  0%   { stroke-opacity:1; stroke-width:3; }
-  50%  { stroke-opacity:.4; stroke-width:6; }
-  100% { stroke-opacity:1; stroke-width:3; }
-}
-
-#branch-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-#branch-actions .btn{flex:1}
-
-@media (max-width:860px){
-  .main{grid-template-columns:1fr;grid-template-rows:45% 55%}
-  .sidebar{border-right:none;border-bottom:1px solid var(--line)}
-}
+  /* Тёмная тема для контрола слоёв Leaflet */
+  body.dark .leaflet-control-layers {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border);
+  }
+  body.dark .leaflet-control-layers label { color: var(--text); }
 </style>
 </head>
 <body>
-<div class="app">
-
-  <header class="topbar">
-    <h1>🛤️ Маршруты KMZ: дерево + карта</h1>
-
-    <label class="file-btn">📂 Загрузить KMZ
-      <input type="file" id="fileKmz" accept=".kmz,.kml" multiple>
-    </label>
-
-    <input class="input" id="search" placeholder="🔎 Поиск: имя, файл, ветвь…">
-
-    <button class="btn" id="expand">Развернуть</button>
-    <button class="btn" id="collapse">Свернуть</button>
-    <button class="btn icon" id="theme" title="Тема">🌙</button>
-
-    <div class="stats">
-      <span class="stat">🌿 <b id="s-branches">0</b> веток</span>
-      <span class="stat">🛤️ <b id="s-routes">0</b> маршрутов</span>
-      <span class="stat">📍 <b id="s-points">0</b> точек</span>
-      <span class="stat">👁 <b id="s-visible">0</b> видимых</span>
-      <span class="stat">🔎 <b id="s-found">—</b></span>
+<div id="app">
+  <aside id="sidebar">
+    <div id="toolbar">
+      <button id="btnUploadFiles">📂 Загрузить KMZ</button>
+      <button id="btnUploadFolder">📁 Загрузить папку</button>
+      <button id="btnNewFolder">📁+ Папка</button>
+      <button id="btnExport">💾 Скачать KMZ</button>
+      <button id="btnTheme">🌓 Тема</button>
+      <input type="file" id="fileInput" multiple accept=".kmz,.kml" style="display:none">
+      <input type="file" id="folderInput" webkitdirectory multiple style="display:none">
     </div>
-  </header>
 
-  <div class="main">
-    <aside class="sidebar">
-      <div class="diag" id="diag">Выберите один или несколько KMZ файлов кнопкой «Загрузить KMZ» в шапке.</div>
+    <div id="searchWrap">
+      <input id="search" type="text" placeholder="Поиск по имени, файлу, ветке, папке…">
+    </div>
 
-      <div class="side-title">Ветки</div>
-      <input class="input" id="filter-branch" placeholder="Фильтр веток…"
-             style="width:100%;margin-bottom:6px">
-      <div id="filter-branch-list"></div>
+    <div id="mergeControls">
+      <input id="newBranchName" placeholder="Название новой ветви">
+      <button id="btnMerge">🚂 Объединить выбранные</button>
+      <button id="btnReplace">🔄 Замена</button>
+    </div>
 
-      <div class="side-title">Объединение в ветвь</div>
-      <input class="input" id="branchName" placeholder="Название ветви"
-             style="width:100%">
-      <div id="branch-actions">
-        <button class="btn primary" id="merge-btn">🚂 Объединить выбранные</button>
-      </div>
+    <div id="pane-tree">
+      <div id="folderTree"></div>
+    </div>
+  </aside>
 
-      <div class="side-title">Действия</div>
-      <button class="btn" id="reset-filters" style="width:100%">Сбросить фильтры</button>
-      <button class="btn" id="export-btn" style="width:100%;margin-top:6px">💾 Скачать KMZ (видимые)</button>
-      <label class="filter-item" style="margin-top:6px">
-        <input type="checkbox" id="groupByBranch" checked>
-        <span>Группировать по ветвям при экспорте</span>
-      </label>
-
-      <div class="side-title">Дерево маршрутов</div>
-      <ul class="tree root" id="tree"></ul>
-    </aside>
-
-    <main class="content">
-      <div class="crumbs-bar" id="crumbs">
-        <span class="crumb">Все ветки</span>
-      </div>
-      <div id="map"></div>
-    </main>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div id="isolationBadge">
+      <span id="isolationText"></span>
+      <button id="btnClearIsolation" title="Снять изоляцию">✕</button>
+    </div>
   </div>
 </div>
 
+<div id="dropHint">Отпустите файлы или папки для загрузки</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-
 <script>
-'use strict';
+/* ============================ State ============================ */
+const State = {
+  routes: [],
+  layers: new Map(),
+  hiddenBranches: new Set(),
+  search: '',
+  mergeMarked: new Set(),
+  isolation: null,
+  customFolders: new Set(),
+  dragPayload: null,
+  debounceTimer: null,
+};
 
-/* ==========================================================================
-   0. ХЕЛПЕРЫ
-   ========================================================================== */
-const $   = id => document.getElementById(id);
-const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const map = L.map('map', { preferCanvas: true }).setView([55.75, 37.62], 6);
 
-function stringToColor(str){
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  const hue = ((hash % 360) + 360) % 360;
-  return 'hsl(' + hue + ', 70%, 45%)';
+/* ---------- Подложки: только стабильные, без API-ключей ---------- */
+const basemaps = {
+  'OSM DE': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap',
+  }),
+  'Esri Улицы': L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: '© Esri' }
+  ),
+  'Esri Спутник': L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: '© Esri' }
+  ),
+  'Esri Топо': L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: '© Esri' }
+  ),
+  'Carto Светлая': L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    { maxZoom: 19, subdomains: 'abcd', attribution: '© CARTO' }
+  ),
+  'Carto Тёмная': L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    { maxZoom: 19, subdomains: 'abcd', attribution: '© CARTO' }
+  ),
+};
+
+/* Прозрачный 1×1 пиксель для битых тайлов — вместо «дырок» */
+const TRANSPARENT_TILE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=';
+Object.values(basemaps).forEach(layer => {
+  layer.options.errorTileUrl = TRANSPARENT_TILE;
+});
+
+/* Дефолтная подложка — самое стабильное немецкое зеркало */
+basemaps['OSM DE'].addTo(map);
+L.control.layers(basemaps, null, { position: 'topright', collapsed: false }).addTo(map);
+
+let searchHighlightLayer = L.layerGroup().addTo(map);
+
+/* ============================ Helpers ============================ */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
 }
 
-function simplify(points, tolerance = 0.00003){
-  if (!points || points.length < 3) return points || [];
+function stringToColor(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  const hue = Math.abs(h) % 360;
+  return `hsl(${hue}, 70%, 45%)`;
+}
+
+function simplify(points, minDist = 3) {
+  if (points.length < 3) return points;
   const out = [points[0]];
-  let last = points[0];
-  const t2 = tolerance * tolerance;
-  for (let i = 1; i < points.length - 1; i++){
-    const p = points[i];
-    const dx = p[0] - last[0], dy = p[1] - last[1];
-    if (dx*dx + dy*dy >= t2){ out.push(p); last = p; }
+  const R = 6371000, toRad = Math.PI / 180;
+  let lastLat = points[0][0], lastLon = points[0][1];
+  for (let i = 1; i < points.length - 1; i++) {
+    const [lat, lon] = points[i];
+    const dLat = (lat - lastLat) * toRad;
+    const dLon = (lon - lastLon) * toRad;
+    const a = Math.sin(dLat/2)**2 +
+              Math.cos(lastLat*toRad) * Math.cos(lat*toRad) * Math.sin(dLon/2)**2;
+    const d = 2 * R * Math.asin(Math.sqrt(a));
+    if (d >= minDist) { out.push([lat, lon]); lastLat = lat; lastLon = lon; }
   }
   out.push(points[points.length - 1]);
   return out;
 }
 
-/* ==========================================================================
-   1. СОСТОЯНИЕ
-   ========================================================================== */
-const State = {
-  routes: [],                // [{id,name,points,branch,visible,filename}]
-  byBranch: new Map(),       // branch → [route,...]
-  filters: { branch: new Set() }
-};
-
-let searchMode = false;
-let searchHighlightLayer = null;
-
-/* ==========================================================================
-   2. КАРТА
-   ========================================================================== */
-const map = L.map('map', {
-  preferCanvas: true,
-  zoomSnap: 0.5,
-  wheelPxPerZoomLevel: 120
-}).setView([55.75, 37.61], 8);
-
-// Подложки без API-ключей
-const baseLayers = {
-  'OSM Hot': L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
-    subdomains: 'abc', maxZoom: 19,
-    attribution: '© OpenStreetMap contributors, Tiles: HOT'
-  }),
-  'OSM DE': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OpenStreetMap contributors'
-  }),
-  'Esri Улицы': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19, attribution: 'Tiles © Esri'
-  }),
-  'Esri Спутник': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19, attribution: 'Tiles © Esri'
-  }),
-  'OpenTopoMap': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-    maxZoom: 17, attribution: '© OpenStreetMap, SRTM | © OpenTopoMap'
-  })
-};
-baseLayers['OSM Hot'].addTo(map);
-L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
-
-const layerById = {};      // id → L.Polyline
-
-/* ==========================================================================
-   3. ПОПАПЫ
-   ========================================================================== */
-function buildPopup(r){
-  const color = r.branch
-    ? stringToColor('branch_' + r.branch)
-    : stringToColor('route_' + r.id);
-  const pts = r.points ? r.points.length : 0;
-  const vis = r.visible !== false ? 'показан' : 'скрыт';
-  return `
-    <div class="route-popup">
-      <div><b>Маршрут:</b> ${esc(r.name)}</div>
-      <div><b>Ветвь:</b> ${esc(r.branch || '—')}</div>
-      <div><b>Файл:</b> ${esc(r.filename)}</div>
-      <div><b>Точек:</b> ${pts}</div>
-      <div><b>Статус:</b> <span style="color:${color}">${vis}</span></div>
-      <div class="zoom-btn" onclick="window.__zoomToRoute(${r.id})">📍 Показать в дереве</div>
-    </div>`;
+function debounce(fn, ms) {
+  return (...args) => {
+    clearTimeout(State.debounceTimer);
+    State.debounceTimer = setTimeout(() => fn(...args), ms);
+  };
 }
 
-function bindHoverPopup(layer, r){
-  layer.bindPopup(buildPopup(r), { closeButton: false, offset: [0, -5] });
-  layer.on('mouseover', function(){ this.openPopup(); });
-  layer.on('mouseout',  function(){ this.closePopup(); });
+function patchRoute(id, patch) {
+  return fetch(`/route/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(err => console.error('PATCH failed', id, err));
 }
 
-window.__zoomToRoute = function(id){
-  const r = State.routes.find(x => x.id === id);
-  if (!r || !r.points.length) return;
-  const b = L.latLngBounds(r.points);
-  map.fitBounds(b.pad(0.15));
-  highlightTreeByRoute(id);
-};
+/* ============================ Loading ============================ */
+async function loadRoutes() {
+  const res = await fetch('/routes');
+  State.routes = await res.json();
+  renderAll();
+}
 
-/* ==========================================================================
-   4. ОТРИСОВКА КАРТЫ
-   ========================================================================== */
-function rebuildMapLayers(){
-  Object.values(layerById).forEach(l => map.removeLayer(l));
-  Object.keys(layerById).forEach(k => delete layerById[k]);
+/* ============================ Map layers ============================ */
+/**
+ * Строит слой маршрута: белая halo-подложка + цветная линия.
+ * halo делает маршрут видимым на любой подложке (светлая/тёмная/спутник).
+ */
+function buildLayer(r) {
+  const pts = simplify(r.points.map(p => [p[0], p[1]]));
+  const color = stringToColor(r.branch || r.name);
 
-  State.routes.forEach(r => {
-    const color = r.branch
-      ? stringToColor('branch_' + r.branch)
-      : stringToColor('route_' + r.id);
-    const pts = simplify(r.points);
-    const line = L.polyline(pts, {
-      color, weight: 3, opacity: 0.85, smoothFactor: 2
-    });
-    bindHoverPopup(line, r);
-    layerById[r.id] = line;
+  const halo = L.polyline(pts, {
+    color: '#ffffff',
+    weight: 7,
+    opacity: 0.75,
+    lineCap: 'round',
+    lineJoin: 'round',
+    interactive: false,
   });
 
+  const line = L.polyline(pts, {
+    color,
+    weight: 3.5,
+    opacity: 0.95,
+    lineCap: 'round',
+    lineJoin: 'round',
+  });
+
+  const group = L.layerGroup([halo, line]);
+
+  group.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    isolateByRoute(r);
+  });
+  group.bindTooltip(r.name, { sticky: true });
+
+  return group;
+}
+
+function rebuildLayers() {
+  for (const [id, layer] of State.layers) map.removeLayer(layer);
+  State.layers.clear();
+  for (const r of State.routes) {
+    const layer = buildLayer(r);
+    State.layers.set(r.id, layer);
+    layer.addTo(map);
+  }
   applyFilters();
+  fitAll();
 }
 
-function routePasses(r){
-  const f = State.filters;
-  if (f.branch.size && !f.branch.has(r.branch || 'Без ветви')) return false;
-  return true;
+function fitAll() {
+  const all = [];
+  for (const layer of State.layers.values()) {
+    // layerGroup: берём координаты из первой полилинии
+    const layers = layer.getLayers ? layer.getLayers() : [layer];
+    for (const l of layers) {
+      if (l.getLatLngs) {
+        try { all.push(...l.getLatLngs()); } catch (e) {}
+      }
+    }
+  }
+  if (all.length) {
+    try { map.fitBounds(L.latLngBounds(all), { padding: [30, 30] }); } catch (e) {}
+  }
 }
 
-function applyFilters(){
-  Object.entries(layerById).forEach(([id, layer]) => {
-    const r = State.routes.find(x => x.id === String(id) || x.id === Number(id));
-    if (!r) return;
-    const ok = routePasses(r) && r.visible !== false;
-    if (searchMode) {
-      if (map.hasLayer(layer)) map.removeLayer(layer);
-    } else if (ok) {
+/* ============================ Filters ============================ */
+function applyFilters() {
+  const q = State.search.toLowerCase();
+
+  for (const r of State.routes) {
+    const layer = State.layers.get(r.id);
+    if (!layer) continue;
+
+    let visible = r.visible;
+    if (r.branch && State.hiddenBranches.has(r.branch)) visible = false;
+
+    if (q) {
+      const hay = `${r.name} ${r.branch || ''} ${r.folder || ''}`.toLowerCase();
+      if (!hay.includes(q)) visible = false;
+    }
+
+    if (State.isolation) {
+      if (State.isolation.type === 'branch') {
+        if ((r.branch || '__none__') !== State.isolation.key) visible = false;
+      } else {
+        if (r.id !== State.isolation.key) visible = false;
+      }
+    }
+
+    if (visible) {
       if (!map.hasLayer(layer)) layer.addTo(map);
     } else {
       if (map.hasLayer(layer)) map.removeLayer(layer);
     }
-  });
-  renderTree();
-  updateStats();
+  }
 }
 
-/* ==========================================================================
-   5. ДЕРЕВО
-   ========================================================================== */
-function renderTree(){
-  const treeEl = $('tree');
-  const frag = document.createDocumentFragment();
+/* ============================ Isolation ============================ */
+function isolateByRoute(r) {
+  const key = r.branch || '__none__';
+  if (State.isolation && State.isolation.key === key &&
+      State.isolation.type === (r.branch ? 'branch' : 'route')) {
+    clearIsolation();
+    return;
+  }
+  State.isolation = { type: r.branch ? 'branch' : 'route', key: r.branch ? key : r.id };
+  applyFilters();
+  updateIsolationBadge();
 
-  State.byBranch.clear();
-  State.routes.forEach(r => {
-    const b = r.branch || 'Без ветви';
-    if (!State.byBranch.has(b)) State.byBranch.set(b, []);
-    State.byBranch.get(b).push(r);
-  });
+  const layer = State.layers.get(r.id);
+  if (layer && r.points.length) {
+    const bounds = L.latLngBounds(r.points.map(p => [p[0], p[1]]));
+    try { map.fitBounds(bounds, { padding: [40, 40] }); } catch (e) {}
+  }
+}
 
-  [...State.byBranch.keys()].sort().forEach(branch => {
-    const routes = State.byBranch.get(branch).filter(routePasses);
-    if (!routes.length) return;
+function clearIsolation() {
+  State.isolation = null;
+  applyFilters();
+  updateIsolationBadge();
+}
 
-    const li = document.createElement('li');
+function updateIsolationBadge() {
+  const badge = document.getElementById('isolationBadge');
+  const text = document.getElementById('isolationText');
+  if (!State.isolation) { badge.style.display = 'none'; return; }
+  badge.style.display = 'flex';
+  if (State.isolation.type === 'branch') {
+    text.textContent = `Изоляция ветви: ${State.isolation.key}`;
+  } else {
+    const r = State.routes.find(x => x.id === State.isolation.key);
+    text.textContent = `Изоляция маршрута: ${r ? r.name : ''}`;
+  }
+}
+map.on('click', () => { if (State.isolation) clearIsolation(); });
+document.getElementById('btnClearIsolation').onclick = clearIsolation;
+
+/* ============================ Folder tree ============================ */
+function buildFolderTree() {
+  const root = { name: '', children: new Map(), routes: [] };
+  function ensure(parts) {
+    let node = root;
+    for (const part of parts) {
+      if (!part) continue;
+      if (!node.children.has(part)) {
+        node.children.set(part, { name: part, children: new Map(), routes: [] });
+      }
+      node = node.children.get(part);
+    }
+    return node;
+  }
+  for (const r of State.routes) {
+    ensure((r.folder || '').split('/').filter(Boolean)).routes.push(r);
+  }
+  for (const path of State.customFolders) {
+    ensure(path.split('/').filter(Boolean));
+  }
+  return root;
+}
+
+function collectRoutesInNode(node) {
+  const out = [...node.routes];
+  for (const child of node.children.values()) {
+    out.push(...collectRoutesInNode(child));
+  }
+  return out;
+}
+
+function renderFolderTree() {
+  const container = document.getElementById('folderTree');
+  container.innerHTML = '';
+  const root = buildFolderTree();
+  renderFolderNode(root, container, [], true);
+}
+
+function renderFolderNode(node, container, pathParts, isRoot) {
+  const currentPath = isRoot ? [] : [...pathParts, node.name];
+  const pathStr = currentPath.join('/');
+
+  if (!isRoot && node.name) {
     const row = document.createElement('div');
-    row.className = 'node';
-    row.dataset.kind = 'branch';
-    row.dataset.branch = branch;
+    row.className = 'folder-row';
+    row.dataset.folderPath = pathStr;
+    row.draggable = true;
 
-    const branchColor = stringToColor('branch_' + branch);
-    row.innerHTML =
-      `<span class="toggle">▾</span>
-       <span class="icon">🌿</span>
-       <span class="switch" style="color:${branchColor}">${esc(branch)}</span>
-       <span class="badge">${routes.length}</span>`;
-    li.appendChild(row);
+    const routesInNode = collectRoutesInNode(node);
+    const total = routesInNode.length;
+    let visibleCount = 0;
+    for (const r of routesInNode) {
+      const hiddenByBranch = r.branch && State.hiddenBranches.has(r.branch);
+      if (r.visible && !hiddenByBranch) visibleCount++;
+    }
 
-    const ul = document.createElement('ul');
-    ul.className = 'tree';
+    row.addEventListener('dragover', onFolderDragOver);
+    row.addEventListener('dragleave', onFolderDragLeave);
+    row.addEventListener('drop', onFolderDrop);
+    row.addEventListener('dragstart', (e) => {
+      State.dragPayload = { type: 'folder', path: pathStr };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', node.name);
+    });
+    row.addEventListener('dragend', () => { State.dragPayload = null; });
 
-    routes.forEach(r => {
-      const aLi = document.createElement('li');
-      const aDiv = document.createElement('div');
-      aDiv.className = 'node route-row';
-      aDiv.dataset.kind = 'route';
-      aDiv.dataset.id = r.id;
-      aDiv.dataset.search =
-        `${r.name} ${r.filename} ${r.branch || ''} ${r.id}`.toLowerCase();
+    const toggle = document.createElement('span');
+    toggle.className = 'folder-toggle';
+    toggle.textContent = '▾';
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      const children = row.nextElementSibling;
+      if (children && children.classList.contains('folder-children')) {
+        children.classList.toggle('collapsed');
+        toggle.textContent = children.classList.contains('collapsed') ? '▸' : '▾';
+      }
+    };
 
-      const dotColor = r.branch
-        ? stringToColor('branch_' + r.branch)
-        : stringToColor('route_' + r.id);
-
-      aDiv.innerHTML =
-        `<span class="color-dot" style="background:${dotColor}"></span>
-         <span>${esc(r.name)}</span>
-         <span class="k">Точек:</span><span>${r.points.length}</span>
-         <span class="k">Ветвь:</span><span style="color:${branchColor}">${esc(r.branch || '—')}</span>
-         <span class="zoom" title="Показать на карте" data-zoom="${r.id}">📍</span>`;
-      aLi.appendChild(aDiv);
-      ul.appendChild(aLi);
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'folder-cb';
+    cb.checked = total > 0 && visibleCount === total;
+    cb.indeterminate = visibleCount > 0 && visibleCount < total;
+    cb.disabled = total === 0;
+    cb.title = `${visibleCount} из ${total} видимо`;
+    cb.addEventListener('click', (e) => e.stopPropagation());
+    cb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const allOn = cb.checked && !cb.indeterminate;
+      setFolderVisible(node, !allOn);
     });
 
-    li.appendChild(ul);
-    frag.appendChild(li);
-  });
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'folder-name';
+    nameSpan.textContent = node.name;
+    nameSpan.title = `${node.name} — ${visibleCount}/${total}`;
+    nameSpan.addEventListener('click', (e) => { e.stopPropagation(); toggle.onclick(e); });
 
-  treeEl.replaceChildren(frag);
-  renderBranchFilter();
-}
+    const cnt = document.createElement('span');
+    cnt.className = 'folder-count';
+    cnt.textContent = total ? `${visibleCount}/${total}` : '';
 
-function highlightTreeByRoute(id){
-  document.querySelectorAll('.node.highlight')
-    .forEach(n => n.classList.remove('highlight'));
-  const node = document.querySelector(`.node.route-row[data-id="${id}"]`);
-  if (!node) return;
+    const actions = document.createElement('span');
+    actions.className = 'folder-actions';
+    actions.innerHTML = `
+      <button data-act="show-all"  title="Показать всё">☑</button>
+      <button data-act="hide-all"  title="Скрыть всё">☐</button>
+      <button data-act="rename-folder" title="Переименовать">✏️</button>
+      <button data-act="new-subfolder" title="Создать подпапку">📁+</button>
+      <button data-act="delete-folder" title="Удалить папку">🗑</button>
+    `;
+    actions.querySelector('[data-act="show-all"]').onclick = (e) => {
+      e.stopPropagation(); setFolderVisible(node, true);
+    };
+    actions.querySelector('[data-act="hide-all"]').onclick = (e) => {
+      e.stopPropagation(); setFolderVisible(node, false);
+    };
+    actions.querySelector('[data-act="rename-folder"]').onclick = (e) => {
+      e.stopPropagation(); renameFolder(pathStr);
+    };
+    actions.querySelector('[data-act="new-subfolder"]').onclick = (e) => {
+      e.stopPropagation();
+      const sub = prompt('Имя подпапки:');
+      if (!sub) return;
+      State.customFolders.add(`${pathStr}/${sub.trim()}`);
+      renderFolderTree();
+    };
+    actions.querySelector('[data-act="delete-folder"]').onclick = (e) => {
+      e.stopPropagation(); deleteFolder(pathStr);
+    };
 
-  let li = node.parentElement;
-  while (li && li.id !== 'tree'){
-    li.classList.remove('collapsed','hidden');
-    const t = li.querySelector(':scope > .node .toggle');
-    if (t) t.textContent = '▾';
-    li = li.parentElement?.closest('li');
+    row.appendChild(toggle);
+    row.appendChild(cb);
+    row.appendChild(nameSpan);
+    row.appendChild(cnt);
+    row.appendChild(actions);
+
+    container.appendChild(row);
+
+    const childWrap = document.createElement('div');
+    childWrap.className = 'folder-children';
+    container.appendChild(childWrap);
+    container = childWrap;
   }
-  node.classList.add('highlight');
-  node.scrollIntoView({ block:'center', behavior:'smooth' });
-}
 
-/* ==========================================================================
-   6. СТАТИСТИКА / ФИЛЬТР ВЕТОК
-   ========================================================================== */
-function updateStats(){
-  $('s-branches').textContent = State.byBranch.size;
-  $('s-routes').textContent   = State.routes.length;
-  const totalPts = State.routes.reduce((s,r) => s + r.points.length, 0);
-  $('s-points').textContent   = totalPts;
-  $('s-visible').textContent  = State.routes.filter(r => r.visible !== false).length;
-}
-
-function renderBranchFilter(){
-  const el = $('filter-branch-list');
-  el.replaceChildren();
-  [...State.byBranch.keys()].sort().forEach(b => {
-    const cnt = State.byBranch.get(b).length;
-    const l = document.createElement('label');
-    l.className = 'filter-item';
-    l.dataset.branch = b.toLowerCase();
-    const color = stringToColor('branch_' + b);
-    l.innerHTML =
-      `<input type="checkbox" data-filter="branch" value="${esc(b)}"
-              ${State.filters.branch.has(b) ? 'checked' : ''}>
-       <span class="name" style="color:${color}">${esc(b)}</span>
-       <span class="cnt">${cnt}</span>`;
-    el.appendChild(l);
-  });
-}
-
-const showDiag = msg => { $('diag').innerHTML = msg; };
-
-/* ==========================================================================
-   7. ЗАГРУЗКА KMZ / ПЕРЕСБОРКА
-   ========================================================================== */
-async function uploadFiles(fileList){
-  if (!fileList.length) return;
-  showDiag('Загрузка ' + fileList.length + ' файлов…');
-
-  const fd = new FormData();
-  for (const f of fileList) fd.append('files', f);
-
-  try{
-    const res = await fetch('/upload', { method: 'POST', body: fd });
-    const data = await res.json();
-    await loadRoutes();
-    showDiag(`Загружено файлов: ${fileList.length}\n` +
-             `Добавлено маршрутов: ${data.added.length}\n` +
-             `Всего в проекте: ${data.total}`);
-  }catch(err){
-    showDiag('Ошибка загрузки: ' + err.message);
+  for (const child of node.children.values()) {
+    renderFolderNode(child, container, currentPath, false);
+  }
+  for (const r of node.routes) {
+    container.appendChild(buildRouteLi(r));
   }
 }
 
-async function loadRoutes(){
-  const res = await fetch('/routes');
-  State.routes = await res.json();
-  rebuildMapLayers();
-  fitAll();
+function buildRouteLi(r) {
+  const li = document.createElement('div');
+  li.className = 'route-row';
+  li.dataset.id = r.id;
+  li.draggable = true;
+
+  li.addEventListener('dragstart', (e) => {
+    State.dragPayload = { type: 'route', id: r.id, from: r.folder || '' };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', r.name);
+    li.classList.add('dragging');
+  });
+  li.addEventListener('dragend', () => {
+    State.dragPayload = null;
+    li.classList.remove('dragging');
+    document.querySelectorAll('.folder-row.drop-target')
+      .forEach(el => el.classList.remove('drop-target'));
+  });
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = r.visible;
+  cb.onchange = async () => {
+    r.visible = cb.checked;
+    await patchRoute(r.id, { visible: r.visible });
+    applyFilters();
+    renderFolderTree();
+  };
+  li.appendChild(cb);
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'route-name';
+  nameSpan.textContent = r.name;
+  nameSpan.title = `${r.name}${r.branch ? ' — ' + r.branch : ''}`;
+  li.appendChild(nameSpan);
+
+  const actions = document.createElement('span');
+  actions.className = 'route-actions';
+  actions.innerHTML = `
+    <button data-act="rename" title="Переименовать">✏️</button>
+    <button data-act="merge" title="Отметить для объединения">${State.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
+    <button data-act="delete" title="Удалить">✕</button>
+  `;
+  actions.querySelector('[data-act="rename"]').onclick = async () => {
+    const nn = prompt('Новое имя:', r.name);
+    if (!nn) return;
+    r.name = nn;
+    await patchRoute(r.id, { name: nn });
+    renderAll();
+  };
+  actions.querySelector('[data-act="merge"]').onclick = () => {
+    if (State.mergeMarked.has(r.id)) State.mergeMarked.delete(r.id);
+    else State.mergeMarked.add(r.id);
+    renderFolderTree();
+  };
+  actions.querySelector('[data-act="delete"]').onclick = async () => {
+    if (!confirm(`Удалить "${r.name}"?`)) return;
+    await fetch(`/route/${r.id}`, { method: 'DELETE' });
+    State.routes = State.routes.filter(x => x.id !== r.id);
+    const l = State.layers.get(r.id);
+    if (l) map.removeLayer(l);
+    State.layers.delete(r.id);
+    renderAll();
+  };
+  li.appendChild(actions);
+
+  if (State.mergeMarked.has(r.id)) li.classList.add('merge-marked');
+  return li;
 }
 
-let __fittedOnce = false;
-function fitAll(){
-  if (__fittedOnce) return;
-  const all = [];
-  State.routes.forEach(r => r.points.forEach(p => all.push(p)));
-  if (all.length) {
-    map.fitBounds(L.latLngBounds(all).pad(0.08));
-    __fittedOnce = true;
+/* Root drop zone */
+const treeRootEl = document.getElementById('folderTree');
+treeRootEl.addEventListener('dragover', (e) => {
+  if (!State.dragPayload) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+});
+treeRootEl.addEventListener('drop', (e) => {
+  if (e.target !== treeRootEl) return;
+  e.currentTarget.dataset.folderPath = '';
+  onFolderDrop(e);
+});
+
+/* ============================ Folder DnD ============================ */
+function onFolderDragOver(e) {
+  if (!State.dragPayload) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drop-target');
+}
+function onFolderDragLeave(e) {
+  e.currentTarget.classList.remove('drop-target');
+}
+async function onFolderDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.currentTarget.classList.remove('drop-target');
+  const payload = State.dragPayload;
+  if (!payload) return;
+  const targetFolder = e.currentTarget.dataset.folderPath || '';
+
+  if (payload.type === 'route') {
+    await moveRoutesToFolder([payload.id], targetFolder);
+  } else if (payload.type === 'branch') {
+    const ids = State.routes
+      .filter(r => (r.branch || '__none__') === payload.key)
+      .map(r => r.id);
+    await moveRoutesToFolder(ids, targetFolder);
+  } else if (payload.type === 'folder') {
+    await moveFolder(payload.path, targetFolder);
   }
+  State.dragPayload = null;
 }
 
-/* ==========================================================================
-   8. ОПЕРАЦИИ С МАРШРУТАМИ
-   ========================================================================== */
-async function renameRoute(id, name){
-  await fetch('/route/' + id, {
-    method: 'PATCH',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ name })
-  });
-  await loadRoutes();
+async function moveRoutesToFolder(ids, folder) {
+  const affected = State.routes.filter(r => ids.includes(r.id));
+  if (!affected.length) return;
+  for (const r of affected) r.folder = folder;
+  State.customFolders.delete(folder);
+  renderAll();
+  await Promise.all(affected.map(r => patchRoute(r.id, { folder })));
 }
 
-async function setBranch(id, branch){
-  await fetch('/route/' + id, {
-    method: 'PATCH',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ branch })
-  });
-  await loadRoutes();
+async function moveFolder(srcPath, dstParent) {
+  if (!srcPath) return;
+  if (dstParent === srcPath || dstParent.startsWith(srcPath + '/')) return;
+  const baseName = srcPath.split('/').pop();
+  const newPath = dstParent ? `${dstParent}/${baseName}` : baseName;
+  if (newPath === srcPath) return;
+
+  const affected = State.routes.filter(r =>
+    r.folder === srcPath || (r.folder || '').startsWith(srcPath + '/')
+  );
+  for (const r of affected) {
+    r.folder = newPath + (r.folder || '').slice(srcPath.length);
+  }
+  const updated = new Set();
+  for (const f of State.customFolders) {
+    if (f === srcPath) updated.add(newPath);
+    else if (f.startsWith(srcPath + '/')) updated.add(newPath + f.slice(srcPath.length));
+    else updated.add(f);
+  }
+  State.customFolders = updated;
+  renderAll();
+  await Promise.all(affected.map(r => patchRoute(r.id, { folder: r.folder })));
 }
 
-async function toggleVisible(id, visible){
-  await fetch('/route/' + id, {
-    method: 'PATCH',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ visible })
-  });
-  const r = State.routes.find(x => x.id === id);
-  if (r) r.visible = visible;
+async function renameFolder(oldPath) {
+  const cur = oldPath.split('/').pop();
+  const newName = prompt('Новое имя папки:', cur);
+  if (!newName || newName === cur) return;
+  const parent = oldPath.split('/').slice(0, -1).join('/');
+  const newPath = parent ? `${parent}/${newName.trim()}` : newName.trim();
+
+  const affected = State.routes.filter(r =>
+    r.folder === oldPath || (r.folder || '').startsWith(oldPath + '/')
+  );
+  for (const r of affected) {
+    r.folder = newPath + (r.folder || '').slice(oldPath.length);
+  }
+  const updated = new Set();
+  for (const f of State.customFolders) {
+    if (f === oldPath) updated.add(newPath);
+    else if (f.startsWith(oldPath + '/')) updated.add(newPath + f.slice(oldPath.length));
+    else updated.add(f);
+  }
+  State.customFolders = updated;
+  renderAll();
+  await Promise.all(affected.map(r => patchRoute(r.id, { folder: r.folder })));
+}
+
+async function deleteFolder(path) {
+  const affected = State.routes.filter(r =>
+    r.folder === path || (r.folder || '').startsWith(path + '/')
+  );
+  if (affected.length && !confirm(
+    `В папке "${path}" есть ${affected.length} маршрут(ов). Переместить их в корень?`
+  )) return;
+
+  for (const r of affected) r.folder = '';
+  State.customFolders.delete(path);
+  for (const f of [...State.customFolders]) {
+    if (f.startsWith(path + '/')) State.customFolders.delete(f);
+  }
+  renderAll();
+  await Promise.all(affected.map(r => patchRoute(r.id, { folder: '' })));
+}
+
+/* ============================ Folder visibility ============================ */
+function setFolderVisible(node, visible) {
+  const routes = collectRoutesInNode(node);
+  if (!routes.length) return;
+
+  for (const r of routes) {
+    r.visible = visible;
+    if (r.branch) {
+      if (visible) State.hiddenBranches.delete(r.branch);
+      else State.hiddenBranches.add(r.branch);
+    }
+  }
   applyFilters();
+  renderFolderTree();
+  Promise.all(routes.map(r => patchRoute(r.id, { visible: r.visible })))
+    .catch(err => console.error('batch visible failed', err));
 }
 
-async function deleteRoute(id){
-  if (!confirm('Удалить маршрут?')) return;
-  await fetch('/route/' + id, { method:'DELETE' });
-  await loadRoutes();
-}
+/* ============================ Search ============================ */
+const searchInput = document.getElementById('search');
+searchInput.addEventListener('input', debounce(() => {
+  State.search = searchInput.value.trim();
+  applyFilters();
+}, 180));
 
-function getSelectedIds(){
-  return Array.from(document.querySelectorAll('.selectBox:checked'))
-              .map(el => parseInt(el.dataset.id, 10));
-}
+/* ============================ Toolbar ============================ */
+document.getElementById('btnUploadFiles').onclick = () => {
+  document.getElementById('fileInput').click();
+};
+document.getElementById('btnUploadFolder').onclick = () => {
+  document.getElementById('folderInput').click();
+};
+document.getElementById('fileInput').onchange = (e) => uploadFiles([...e.target.files]);
+document.getElementById('folderInput').onchange = (e) => uploadFiles([...e.target.files]);
 
-async function mergeSelected(){
-  const ids = getSelectedIds();
-  const name = $('branchName').value.trim() || 'Новая ветвь';
-  if (ids.length < 2) { alert('Отметьте минимум 2 маршрута галочками в дереве'); return; }
+document.getElementById('btnNewFolder').onclick = () => {
+  const name = prompt('Название новой папки (можно через / для вложенности):');
+  if (!name) return;
+  const clean = name.trim().replace(/^\/+|\/+$/g, '');
+  if (!clean) return;
+  State.customFolders.add(clean);
+  renderFolderTree();
+};
 
-  showDiag('Объединение…');
-  const res = await fetch('/merge', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ ids, name })
-  });
-  if (!res.ok){ alert('Ошибка объединения'); return; }
-  await loadRoutes();
-  $('branchName').value = '';
-  showDiag('Ветвь создана: ' + name);
-}
-
-async function exportKmz(){
-  const visibleIds = State.routes.filter(r => r.visible !== false).map(r => r.id);
-  if (!visibleIds.length){ alert('Нет видимых маршрутов'); return; }
-
-  showDiag('Экспорт KMZ…');
-  const group = $('groupByBranch').checked;
+document.getElementById('btnExport').onclick = async () => {
+  const visibleIds = State.routes
+    .filter(r => {
+      const layer = State.layers.get(r.id);
+      return layer && map.hasLayer(layer);
+    })
+    .map(r => r.id);
+  if (!visibleIds.length) { alert('Нет видимых маршрутов для экспорта'); return; }
+  const groupByBranch = confirm('Группировать по ветвям? OK — да, Отмена — нет.');
   const res = await fetch('/export', {
     method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ ids: visibleIds, group_by_branch: group })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: visibleIds, group_by_branch: groupByBranch }),
   });
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'routes_export.kmz';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  a.href = url; a.download = 'routes.kmz'; a.click();
   URL.revokeObjectURL(url);
-  showDiag('Файл сохранён');
-}
+};
 
-/* ==========================================================================
-   9. ПОИСК
-   ========================================================================== */
-function highlightMarkersByQuery(q){
-  if (searchHighlightLayer){
-    map.removeLayer(searchHighlightLayer);
-    searchHighlightLayer = null;
-  }
-  if (!q){
-    searchMode = false;
-    applyFilters();
-    return 0;
-  }
+document.getElementById('btnTheme').onclick = () => {
+  document.body.classList.toggle('dark');
+  localStorage.setItem('theme', document.body.classList.contains('dark') ? 'dark' : 'light');
+};
+if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark');
 
-  const hits = State.routes.filter(r =>
-    routePasses(r) &&
-    `${r.name} ${r.filename} ${r.branch || ''} ${r.id}`
-      .toLowerCase().includes(q)
-  );
-
-  searchMode = true;
-  Object.values(layerById).forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
-
-  const group = L.layerGroup();
-  hits.forEach(r => {
-    const pts = simplify(r.points);
-    const line = L.polyline(pts, {
-      color:'#38bdf8', weight:3, opacity:1,
-      className:'search-hit'
-    });
-    line.bindPopup(buildPopup(r), { closeButton:false });
-    line.on('mouseover', function(){ this.openPopup(); });
-    line.on('mouseout',  function(){ this.closePopup(); });
-    line.addTo(group);
+/* ============================ Merge / Replace ============================ */
+document.getElementById('btnMerge').onclick = async () => {
+  const name = document.getElementById('newBranchName').value.trim();
+  if (!name) { alert('Введите название новой ветви'); return; }
+  if (State.mergeMarked.size < 2) { alert('Отметьте минимум 2 маршрута'); return; }
+  const res = await fetch('/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [...State.mergeMarked], name }),
   });
-  group.addTo(map);
-  searchHighlightLayer = group;
+  if (!res.ok) { alert('Ошибка объединения'); return; }
+  State.mergeMarked.clear();
+  document.getElementById('newBranchName').value = '';
+  await loadRoutes();
+  rebuildLayers();
+};
 
-  if (hits.length){
-    const all = [];
-    hits.forEach(r => r.points.forEach(p => all.push(p)));
-    map.fitBounds(L.latLngBounds(all).pad(0.15));
+document.getElementById('btnReplace').onclick = async () => {
+  const find = prompt('Что заменить в именах ветвей:');
+  if (find === null) return;
+  const repl = prompt('На что заменить:', '');
+  if (repl === null) return;
+
+  const affected = State.routes.filter(r => r.branch && r.branch.includes(find));
+  for (const r of affected) {
+    r.branch = r.branch.split(find).join(repl);
+    r.name = r.name.split(find).join(repl);
   }
-  return hits.length;
+  renderAll();
+  await Promise.all(affected.map(r =>
+    patchRoute(r.id, { branch: r.branch, name: r.name })
+  ));
+};
+
+/* ============================ Upload ============================ */
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  for (const f of files) {
+    fd.append('files[]', f, f.name);
+    fd.append('paths[]', f.webkitRelativePath || f.name);
+  }
+  const res = await fetch('/upload', { method: 'POST', body: fd });
+  const data = await res.json();
+  console.log('Uploaded:', data);
+  await loadRoutes();
+  rebuildLayers();
 }
 
-function applySearch(q){
-  const all = document.querySelectorAll('#tree li');
-  all.forEach(li => li.classList.remove('hidden'));
-  document.querySelectorAll('#tree .node.highlight')
-    .forEach(n => n.classList.remove('highlight'));
+/* Drag&drop upload */
+let dragCounter = 0;
+const dropHint = document.getElementById('dropHint');
 
-  if (!q){
-    highlightMarkersByQuery('');
-    $('s-found').textContent = '—';
+window.addEventListener('dragenter', (e) => {
+  if (State.dragPayload) return;
+  if (!e.dataTransfer.types.includes('Files')) return;
+  dragCounter++;
+  dropHint.classList.add('visible');
+});
+window.addEventListener('dragleave', () => {
+  if (State.dragPayload) return;
+  dragCounter--;
+  if (dragCounter <= 0) { dropHint.classList.remove('visible'); dragCounter = 0; }
+});
+window.addEventListener('dragover', (e) => {
+  if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+});
+window.addEventListener('drop', async (e) => {
+  if (State.dragPayload) return;
+  e.preventDefault();
+  dropHint.classList.remove('visible');
+  dragCounter = 0;
+
+  const items = [...(e.dataTransfer.items || [])];
+  if (!items.length) {
+    uploadFiles([...e.dataTransfer.files]);
     return;
   }
-
-  const matched = [];
-  document.querySelectorAll('#tree .route-row').forEach(n => {
-    if ((n.dataset.search || '').includes(q)) matched.push(n);
-  });
-
-  if (matched.length){
-    all.forEach(li => li.classList.add('hidden'));
-    matched.forEach(n => {
-      n.classList.add('highlight');
-      let li = n.parentElement;
-      while (li && li.id !== 'tree'){
-        li.classList.remove('hidden','collapsed');
-        const t = li.querySelector(':scope > .node .toggle');
-        if (t) t.textContent = '▾';
-        li = li.parentElement?.closest('li');
-      }
-      if (matched.length === 1){
-        n.scrollIntoView({ block:'center', behavior:'smooth' });
-      }
-    });
-  }
-
-  $('s-found').textContent = highlightMarkersByQuery(q);
-}
-
-/* ==========================================================================
-   10. СОБЫТИЯ
-   ========================================================================== */
-$('fileKmz').addEventListener('change', e => {
-  uploadFiles(e.target.files).then(() => { e.target.value = ''; });
-});
-
-document.addEventListener('change', e => {
-  const input = e.target.closest('input[data-filter]');
-  if (!input) return;
-  const set = State.filters[input.dataset.filter];
-  if (input.checked) set.add(input.value); else set.delete(input.value);
-  applyFilters();
-});
-
-$('reset-filters').addEventListener('click', () => {
-  State.filters.branch.clear();
-  document.querySelectorAll('input[data-filter]').forEach(i => i.checked = false);
-  $('filter-branch').value = '';
-  document.querySelectorAll('#filter-branch-list .filter-item')
-    .forEach(el => el.style.display = '');
-  applyFilters();
-});
-
-$('expand').addEventListener('click', () => {
-  document.querySelectorAll('#tree li.collapsed')
-    .forEach(li => li.classList.remove('collapsed'));
-  document.querySelectorAll('#tree .toggle').forEach(t => t.textContent = '▾');
-});
-$('collapse').addEventListener('click', () => {
-  document.querySelectorAll('#tree li').forEach(li => li.classList.add('collapsed'));
-  document.querySelectorAll('#tree .toggle').forEach(t => t.textContent = '▸');
-});
-
-$('tree').addEventListener('click', e => {
-  const zoom = e.target.closest('.zoom');
-  if (zoom){
-    e.stopPropagation();
-    window.__zoomToRoute(parseInt(zoom.dataset.zoom, 10));
-    return;
-  }
-  const node = e.target.closest('.node');
-  if (!node) return;
-
-  const li = node.parentElement;
-  if (li && li.tagName === 'LI' && li.querySelector(':scope > ul')){
-    li.classList.toggle('collapsed');
-    const t = node.querySelector('.toggle');
-    if (t) t.textContent = li.classList.contains('collapsed') ? '▸' : '▾';
-  }
-
-  document.querySelectorAll('.node.selected')
-    .forEach(n => n.classList.remove('selected'));
-  node.classList.add('selected');
-
-  if (node.dataset.kind === 'branch'){
-    const rs = State.byBranch.get(node.dataset.branch) || [];
-    const all = [];
-    rs.forEach(r => r.points.forEach(p => all.push(p)));
-    if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.15));
-    $('crumbs').innerHTML =
-      `<span class="crumb">Все ветки</span> › <b>${esc(node.dataset.branch)}</b>`;
-  } else if (node.dataset.kind === 'route'){
-    const r = State.routes.find(x => String(x.id) === node.dataset.id);
-    if (r){
-      map.fitBounds(L.latLngBounds(r.points).pad(0.15));
-      $('crumbs').innerHTML =
-        `<span class="crumb">Все ветки</span> › <b>${esc(r.name)}</b>`;
+  const files = [];
+  async function walkEntry(entry, path) {
+    if (entry.isFile) {
+      const file = await new Promise((res, rej) => entry.file(res, rej));
+      Object.defineProperty(file, 'webkitRelativePath', { value: path + file.name });
+      files.push(file);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const entries = await new Promise((res) => {
+        const all = [];
+        const read = () => reader.readEntries((batch) => {
+          if (!batch.length) res(all);
+          else { all.push(...batch); read(); }
+        });
+        read();
+      });
+      for (const child of entries) await walkEntry(child, path + entry.name + '/');
     }
   }
+  for (const item of items) {
+    const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+    if (entry) await walkEntry(entry, '');
+  }
+  if (files.length) uploadFiles(files);
 });
 
-$('merge-btn').addEventListener('click', mergeSelected);
-$('export-btn').addEventListener('click', exportKmz);
-
-/* Поиск */
-let searchRaf = 0;
-$('search').addEventListener('input', e => {
-  cancelAnimationFrame(searchRaf);
-  const q = e.target.value.trim().toLowerCase();
-  searchRaf = requestAnimationFrame(() => applySearch(q));
-});
-
-/* Фильтр веток в сайдбаре */
-$('filter-branch').addEventListener('input', e => {
-  const q = e.target.value.toLowerCase();
-  document.querySelectorAll('#filter-branch-list .filter-item').forEach(el => {
-    el.style.display = el.dataset.branch.includes(q) ? '' : 'none';
-  });
-});
-
-/* Тема */
-const themeBtn = $('theme');
-function applyTheme(t){
-  document.documentElement.dataset.theme = t;
-  themeBtn.textContent = t === 'light' ? '☀️' : '🌙';
-  try { localStorage.setItem('kmz-theme', t); } catch(_){}
+/* ============================ Render / Init ============================ */
+function renderAll() {
+  renderFolderTree();
+  applyFilters();
 }
-applyTheme(localStorage.getItem('kmz-theme') || 'dark');
-themeBtn.addEventListener('click', () =>
-  applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'));
 
-/* ==========================================================================
-   11. СТАРТ
-   ========================================================================== */
-showDiag(
-  '👋 Добро пожаловать!\n' +
-  'Выберите один или несколько .kmz файлов кнопкой в шапке.\n\n' +
-  'После загрузки:\n' +
-  '  • все маршруты появятся на карте;\n' +
-  '  • можно переименовывать, скрывать, объединять в ветви;\n' +
-  '  • скачать итоговый KMZ по кнопке «Скачать KMZ (видимые)».'
-);
+async function init() {
+  await loadRoutes();
+  rebuildLayers();
+  console.log('routes:', State.routes.length,
+              'layers:', State.layers.size,
+              'onMap:', [...State.layers.values()].filter(l => map.hasLayer(l)).length);
+}
 
-loadRoutes();
+init();
 </script>
 </body>
 </html>

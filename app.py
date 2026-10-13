@@ -1,79 +1,78 @@
-import os
 import io
+import os
 import zipfile
 import xml.etree.ElementTree as ET
-from flask import Flask, render_template, request, jsonify, send_file
-from werkzeug.utils import secure_filename
+from flask import Flask, request, jsonify, render_template, send_file
 import simplekml
 
-# ---------------------------------------------------------------------------
-# Настройки
-# ---------------------------------------------------------------------------
 app = Flask(__name__)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), 'uploads')
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024   # 500 MB суммарно
-
-# Хранилище маршрутов в памяти.
-# { id: {"id", "name", "points": [[lat,lon],...], "filename", "branch", "visible"} }
 ROUTES = {}
-_next_id = [1]
-
-KML_NS = 'http://www.opengis.net/kml/2.2'
+_next_id = 1
 
 
-# ---------------------------------------------------------------------------
-# Разбор KMZ
-# ---------------------------------------------------------------------------
-def parse_kmz(path):
-    """
-    Возвращает список маршрутов из KMZ-файла.
-    Формат: [(name, [[lat, lon], ...]), ...]
-    """
-    with zipfile.ZipFile(path, 'r') as z:
-        kml_name = next(
-            (n for n in z.namelist() if n.lower().endswith('.kml')),
-            None
-        )
-        if not kml_name:
-            return []
-        data = z.read(kml_name)
+def _strip_ns(tag: str) -> str:
+    return tag.split('}', 1)[1] if '}' in tag else tag
 
-    root = ET.fromstring(data)
+
+def _parse_kml_bytes(data: bytes):
+    """Return list of (name, [(lat, lon), ...]) for each LineString found."""
     result = []
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        print('KML parse error:', e)
+        return result
 
-    for pm in root.iter(f'{{{KML_NS}}}Placemark'):
-        name_el = pm.find(f'{{{KML_NS}}}name')
-        name = (name_el.text if name_el is not None and name_el.text
-                else 'Без имени')
-
-        for ls in pm.iter(f'{{{KML_NS}}}LineString'):
-            coords_el = ls.find(f'{{{KML_NS}}}coordinates')
+    for pm in root.iter():
+        if _strip_ns(pm.tag) != 'Placemark':
+            continue
+        name = 'route'
+        for child in pm:
+            if _strip_ns(child.tag) == 'name' and child.text:
+                name = child.text.strip()
+                break
+        for ls in pm.iter():
+            if _strip_ns(ls.tag) != 'LineString':
+                continue
+            coords_el = None
+            for child in ls.iter():
+                if _strip_ns(child.tag) == 'coordinates':
+                    coords_el = child
+                    break
             if coords_el is None or not coords_el.text:
                 continue
-
             pts = []
-            for token in coords_el.text.strip().split():
+            for token in coords_el.text.split():
                 parts = token.split(',')
                 if len(parts) >= 2:
                     try:
-                        lon = float(parts[0])
-                        lat = float(parts[1])
+                        lon = float(parts[0]); lat = float(parts[1])
                         pts.append([lat, lon])
                     except ValueError:
                         continue
-            if len(pts) >= 2:
+            if pts:
                 result.append((name, pts))
-
     return result
 
 
-# ---------------------------------------------------------------------------
-# Маршруты
-# ---------------------------------------------------------------------------
+def parse_route_file(path: str, ext: str):
+    if ext == '.kmz':
+        try:
+            with zipfile.ZipFile(path) as z:
+                for n in z.namelist():
+                    if n.lower().endswith('.kml'):
+                        return _parse_kml_bytes(z.read(n))
+        except zipfile.BadZipFile:
+            return []
+        return []
+    else:
+        with open(path, 'rb') as f:
+            return _parse_kml_bytes(f.read())
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -81,76 +80,57 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    files = request.files.getlist('files')
-    if not files:
-        return jsonify({'added': [], 'total': len(ROUTES)})
-
-    added = []
-    for f in files:
-        if not f or not f.filename:
-            continue
-        if not f.filename.lower().endswith(('.kmz', '.kml')):
-            continue
-
-        fname = secure_filename(f.filename)
-        save_path = os.path.join(app.config['UPLOAD_FOLDER'], fname)
-        f.save(save_path)
-
-        try:
-            routes = parse_kmz(save_path)
-        except Exception as e:
-            app.logger.warning(f'Ошибка чтения {fname}: {e}')
+    global _next_id
+    files = request.files.getlist('files[]')
+    paths = request.form.getlist('paths[]')
+    added = 0
+    for i, f in enumerate(files):
+        fname = f.filename or f'file_{i}'
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in ('.kmz', '.kml'):
             continue
 
-        if not routes:
-            app.logger.info(f'В файле {fname} не найдено ни одного LineString')
-            continue
+        rel = paths[i] if i < len(paths) else fname
+        parts = [p for p in rel.split('/') if p]
+        folder_parts = parts[1:-1] if len(parts) > 1 else []
+        folder = '/'.join(folder_parts)
 
+        safe = fname.replace('/', '_').replace('\\', '_')
+        tmp = os.path.join(UPLOAD_DIR, f'{_next_id}_{safe}')
+        f.save(tmp)
+
+        parsed = parse_route_file(tmp, ext)
+        multi = len(parsed) > 1
         base_name = os.path.splitext(fname)[0]
-
-        for i, (name, pts) in enumerate(routes):
-            rid = _next_id[0]
-            _next_id[0] += 1
-
-            # Если в файле один маршрут — берём имя как есть.
-            # Если несколько — добавляем префикс файла, чтобы не путались.
-            display_name = name if len(routes) == 1 else f'{base_name} — {name}'
-
+        for name, pts in parsed:
+            rid = _next_id
+            _next_id += 1
+            rname = f'{base_name} — {name}' if multi else name
             ROUTES[rid] = {
                 'id': rid,
-                'name': display_name,
-                'points': pts,
-                'filename': fname,
+                'name': rname,
                 'branch': None,
+                'folder': folder,
                 'visible': True,
+                'points': pts,
             }
-            added.append(rid)
-
-    return jsonify({'added': added, 'total': len(ROUTES)})
+            added += 1
+    return jsonify({'added': added})
 
 
 @app.route('/routes')
-def get_routes():
+def routes():
     return jsonify(list(ROUTES.values()))
 
 
 @app.route('/route/<int:rid>', methods=['PATCH'])
-def update_route(rid):
+def patch_route(rid):
     if rid not in ROUTES:
         return jsonify({'error': 'not found'}), 404
-
-    data = request.get_json(silent=True) or {}
-
-    if 'name' in data:
-        ROUTES[rid]['name'] = str(data['name'])
-
-    if 'branch' in data:
-        b = data['branch']
-        ROUTES[rid]['branch'] = (str(b).strip() or None) if b is not None else None
-
-    if 'visible' in data:
-        ROUTES[rid]['visible'] = bool(data['visible'])
-
+    data = request.get_json(force=True) or {}
+    for k in ('name', 'branch', 'folder', 'visible'):
+        if k in data:
+            ROUTES[rid][k] = data[k]
     return jsonify(ROUTES[rid])
 
 
@@ -161,88 +141,53 @@ def delete_route(rid):
 
 
 @app.route('/merge', methods=['POST'])
-def merge_routes():
-    """
-    Объединяет несколько маршрутов в один общий — новую ветвь.
-    Точки просто склеиваются в порядке ids.
-    """
-    data = request.get_json(silent=True) or {}
+def merge():
+    global _next_id
+    data = request.get_json(force=True) or {}
     ids = data.get('ids', [])
-    new_name = (data.get('name') or 'Ветвь').strip()
-
-    if len(ids) < 2:
-        return jsonify({'error': 'Нужно минимум 2 маршрута'}), 400
-
-    merged_points = []
+    name = data.get('name', 'Объединённый маршрут')
+    pts = []
     for rid in ids:
-        r = ROUTES.get(int(rid))
+        r = ROUTES.get(rid)
         if r:
-            merged_points.extend(r['points'])
-
-    if not merged_points:
-        return jsonify({'error': 'Нет точек'}), 400
-
-    rid = _next_id[0]
-    _next_id[0] += 1
-
+            pts.extend(r['points'])
+    if not pts:
+        return jsonify({'error': 'no points'}), 400
+    rid = _next_id; _next_id += 1
     ROUTES[rid] = {
-        'id': rid,
-        'name': new_name,
-        'points': merged_points,
-        'filename': 'merged',
-        'branch': new_name,
-        'visible': True,
-        'merged_from': list(ids),
+        'id': rid, 'name': name, 'branch': name,
+        'folder': '', 'visible': True, 'points': pts,
     }
+    for old in ids:
+        ROUTES.pop(old, None)
     return jsonify(ROUTES[rid])
 
 
 @app.route('/export', methods=['POST'])
-def export_kmz():
-    """
-    Экспортирует выбранные маршруты в один KMZ.
-    Если group_by_branch=true — раскладывает по папкам KML по полю branch.
-    """
-    data = request.get_json(silent=True) or {}
+def export():
+    data = request.get_json(force=True) or {}
     ids = data.get('ids', [])
-    group_by_branch = data.get('group_by_branch', True)
-
+    group_by_branch = bool(data.get('group_by_branch'))
     kml = simplekml.Kml()
-
-    if group_by_branch:
-        folders = {}
-        for rid in ids:
-            r = ROUTES.get(int(rid))
-            if not r:
-                continue
-            bname = r.get('branch') or 'Без ветви'
-            if bname not in folders:
-                folders[bname] = kml.newfolder(name=bname)
-            line = folders[bname].newlinestring(name=r['name'])
-            line.coords = [(lon, lat) for lat, lon in r['points']]
-    else:
-        for rid in ids:
-            r = ROUTES.get(int(rid))
-            if not r:
-                continue
-            line = kml.newlinestring(name=r['name'])
-            line.coords = [(lon, lat) for lat, lon in r['points']]
-
+    folders = {}
+    for rid in ids:
+        r = ROUTES.get(rid)
+        if not r:
+            continue
+        if group_by_branch and r.get('branch'):
+            if r['branch'] not in folders:
+                folders[r['branch']] = kml.newfolder(name=r['branch'])
+            container = folders[r['branch']]
+        else:
+            container = kml
+        ls = container.newlinestring(name=r['name'])
+        ls.coords = [(p[1], p[0]) for p in r['points']]
     buf = io.BytesIO()
     kml.savekmz(buf)
     buf.seek(0)
-
-    return send_file(
-        buf,
-        mimetype='application/vnd.google-earth.kmz',
-        as_attachment=True,
-        download_name='routes_export.kmz'
-    )
+    return send_file(buf, mimetype='application/vnd.google-earth.kmz',
+                     as_attachment=True, download_name='routes.kmz')
 
 
-# ---------------------------------------------------------------------------
-# Запуск
-# ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    # debug=False — важно при 40 файлах, иначе Werkzeug сильно тормозит
-    app.run(debug=False, host='127.0.0.1', port=5000)
+    app.run(debug=True, host='127.0.0.1', port=5000)
