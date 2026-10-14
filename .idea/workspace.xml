@@ -4,15 +4,35 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat: KMZ Routes Viewer — папки, drag&amp;drop, массовая видимость, стабильные подложки&#10;&#10;Одностраничное приложение для загрузки, визуализации и редактирования&#10;маршрутов KMZ/KML: Flask-бэкенд + Leaflet-фронтенд в одном HTML-файле.&#10;&#10;Backend (Flask):&#10;- Парсер KML без учёта XML-namespace: _strip_ns + рекурсивный обход,&#10;  работает с KML из любых источников (Google Earth, SAS.Planet, GPS-трекеры)&#10;- /upload сохраняет структуру папок: folder строится из относительного&#10;  пути, первый сегмент (корень выбранной папки) отрезается&#10;- /merge — объединение нескольких маршрутов в один, обновление ветви&#10;- /export — KMZ через simplekml с опциональной группировкой по ветвям&#10;- PATCH /route/&lt;id&gt; принимает name, branch, folder, visible&#10;&#10;Frontend — дерево маршрутов:&#10;- Иерархия папок повторяет структуру на диске&#10;- Создание, переименование, удаление папок; вложенные подпапки&#10;- Сворачивание/разворачивание узлов&#10;- Счётчик видимых/всего маршрутов у каждой папки&#10;&#10;Frontend — drag&amp;drop:&#10;- Перетаскивание файлов и папок прямо в окно (webkitGetAsEntry,&#10;  рекурсивный обход подпапок любой глубины)&#10;- Перетаскивание маршрутов, веток и папок внутри дерева&#10;- Подсветка цели drop, drop в корень дерева&#10;- Массовое перемещение: перетаскивание папки переносит всё поддерево&#10;&#10;Frontend — видимость маршрутов:&#10;- Чекбокс у каждого маршрута, у каждой папки (indeterminate + счётчик)&#10;- Кнопки ☑/☐ в hover-панели папки — «показать всё» / «скрыть всё»&#10;- Синхронизация: скрытие группы управляет и State.hiddenBranches,&#10;  и r.visible&#10;- Батч-PATCH на сервер при массовых операциях&#10;&#10;Frontend — карта:&#10;- Leaflet 1.9.4, preferCanvas, прореживание точек simplify() ~3 м&#10;- Детерминированный цвет маршрута по имени (stringToColor)&#10;- Halo под каждой линией: белая подложка weight 7 + цветная weight 3.5 —&#10;  маршруты видны на светлых, тёмных и спутниковых подложках&#10;- 6 стабильных подложек без API-ключей: OSM DE (дефолт),&#10;  Esri Улицы, Esri Спутник, Esri Топо, Carto Светлая, Carto Тёмная&#10;- errorTileUrl (прозрачный 1×1) для битых тайлов, фон #map по теме&#10;- Изоляция: клик по линии скрывает всё остальное и зумится на выбранную&#10;  ветвь; клик по пустому месту или ✕ в бейдже — снятие изоляции&#10;&#10;Frontend — прочее:&#10;- Поиск по имени, ветке, папке (debounce 180 мс)&#10;- Тёмная/светлая тема, состояние в localStorage&#10;- Экспорт видимых маршрутов в KMZ с опциональной группировкой по ветвям&#10;- Массовая замена подстроки в именах ветвей&#10;&#10;Удалено относительно ранних версий:&#10;- Вкладка «Ветви» и вся её инфраструктура (getBranchGroup,&#10;  getBranchSubgroup, getBranchSubsub, renderBranchFilter,&#10;  buildGroupHeader, buildBranchRow, setBranchesVisible, State.byBranch)&#10;- Подложки OSM Hot (tile.openstreetmap.fr) и OpenTopoMap —&#10;  нестабильны в РФ, отдают пустые тайлы&#10;&#10;Структура проекта:&#10;  app.py             — Flask-сервер и API&#10;  templates/index.html — всё приложение целиком&#10;  uploads/           — временные копии KMZ (создаётся автоматически)&#10;  requirements.txt   — Flask, simplekml&#10;  README.md&#10;&#10;Стек: Python 3.10+, Flask, simplekml, Leaflet 1.9.4, ванильный JS." />
+    <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat: KMZ Routes Viewer — папки, drag&amp;drop, массовая видимость, стабильные подложки&#10;&#10;Одностраничное приложение для загрузки, визуализации и редактирования&#10;маршрутов KMZ/KML: Flask-бэкенд + Leaflet-фронтенд в одном HTML-файле.&#10;&#10;Backend (Flask):&#10;- Парсер KML без учёта XML-namespace: _strip_ns + рекурсивный обход,&#10;  работает с KML из любых источников (Google Earth, SAS.Planet, GPS-трекеры)&#10;- /upload сохраняет структуру папок: folder строится из относительного&#10;  пути, первый сегмент (корень выбранной папки) отрезается&#10;- /merge — объединение нескольких маршрутов в один, обновление ветви&#10;- /export — KMZ через simplekml с опциональной группировкой по ветвям&#10;- PATCH /route/&lt;id&gt; принимает name, branch, folder, visible&#10;&#10;Frontend — дерево маршрутов:&#10;- Иерархия папок повторяет структуру на диске&#10;- Создание, переименование, удаление папок; вложенные подпапки&#10;- Сворачивание/разворачивание узлов&#10;- Счётчик видимых/всего маршрутов у каждой папки&#10;&#10;Frontend — drag&amp;drop:&#10;- Перетаскивание файлов и папок прямо в окно (webkitGetAsEntry,&#10;  рекурсивный обход подпапок любой глубины)&#10;- Перетаскивание маршрутов, веток и папок внутри дерева&#10;- Подсветка цели drop, drop в корень дерева&#10;- Массовое перемещение: перетаскивание папки переносит всё поддерево&#10;&#10;Frontend — видимость маршрутов:&#10;- Чекбокс у каждого маршрута, у каждой папки (indeterminate + счётчик)&#10;- Кнопки ☑/☐ в hover-панели папки — «показать всё» / «скрыть всё»&#10;- Синхронизация: скрытие группы управляет и State.hiddenBranches,&#10;  и r.visible&#10;- Батч-PATCH на сервер при массовых операциях&#10;&#10;Frontend — карта:&#10;- Leaflet 1.9.4, preferCanvas, прореживание точек simplify() ~3 м&#10;- Детерминированный цвет маршрута по имени (stringToColor)&#10;- Halo под каждой линией: белая подложка weight 7 + цветная weight 3.5 —&#10;  маршруты видны на светлых, тёмных и спутниковых подложках&#10;- 6 стабильных подложек без API-ключей: OSM DE (дефолт),&#10;  Esri Улицы, Esri Спутник, Esri Топо, Carto Светлая, Carto Тёмная&#10;- errorTileUrl (прозрачный 1×1) для битых тайлов, фон #map по теме&#10;- Изоляция: клик по линии скрывает всё остальное и зумится на выбранную&#10;  ветвь; клик по пустому месту или ✕ в бейдже — снятие изоляции&#10;&#10;Frontend — прочее:&#10;- Поиск по имени, ветке, папке (debounce 180 мс)&#10;- Тёмная/светлая тема, состояние в localStorage&#10;- Экспорт видимых маршрутов в KMZ с опциональной группировкой по ветвям&#10;- Массовая замена подстроки в именах ветвей&#10;&#10;Удалено относительно ранних версий:&#10;- Вкладка «Ветви» и вся её инфраструктура (getBranchGroup,&#10;  getBranchSubgroup, getBranchSubsub, renderBranchFilter,&#10;  buildGroupHeader, buildBranchRow, setBranchesVisible, State.byBranch)&#10;- Подложки OSM Hot (tile.openstreetmap.fr) и OpenTopoMap —&#10;  нестабильны в РФ, отдают пустые тайлы&#10;&#10;Структура проекта:&#10;  app.py             — Flask-сервер и API&#10;  templates/index.html — всё приложение целиком&#10;  uploads/           — временные копии KMZ (создаётся автоматически)&#10;  requirements.txt   — Flask, simplekml&#10;  README.md&#10;&#10;Стек: Python 3.10+, Flask, simplekml, Leaflet 1.9.4, ванильный JS.">
+      <change beforePath="$PROJECT_DIR$/# GPON фильтр + карта.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/templates/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/templates/index.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/text.html" beforeDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="Git.Settings">
+    <option name="RECENT_BRANCH_BY_REPOSITORY">
+      <map>
+        <entry key="$PROJECT_DIR$" value="main" />
+      </map>
+    </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
+  "lastFilter": {}
+}]]></component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/molander80/vols.git",
+    "accountId": "2465a757-646d-49bd-9dd0-9cf04623ae79"
+  }
+}]]></component>
   <component name="ProjectColorInfo">{
   &quot;customColor&quot;: &quot;&quot;,
   &quot;associatedIndex&quot;: 7
@@ -29,7 +49,7 @@
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "Part-Two",
     "settings.editor.selected.configurable": "preferences.pluginManager"
   }
 }]]></component>
@@ -101,8 +121,39 @@
       <option name="project" value="LOCAL" />
       <updated>1791880850848</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="feat: KMZ Routes Viewer — папки, drag&amp;drop, массовая видимость, стабильные подложки&#10;&#10;Одностраничное приложение для загрузки, визуализации и редактирования&#10;маршрутов KMZ/KML: Flask-бэкенд + Leaflet-фронтенд в одном HTML-файле.&#10;&#10;Backend (Flask):&#10;- Парсер KML без учёта XML-namespace: _strip_ns + рекурсивный обход,&#10;  работает с KML из любых источников (Google Earth, SAS.Planet, GPS-трекеры)&#10;- /upload сохраняет структуру папок: folder строится из относительного&#10;  пути, первый сегмент (корень выбранной папки) отрезается&#10;- /merge — объединение нескольких маршрутов в один, обновление ветви&#10;- /export — KMZ через simplekml с опциональной группировкой по ветвям&#10;- PATCH /route/&lt;id&gt; принимает name, branch, folder, visible&#10;&#10;Frontend — дерево маршрутов:&#10;- Иерархия папок повторяет структуру на диске&#10;- Создание, переименование, удаление папок; вложенные подпапки&#10;- Сворачивание/разворачивание узлов&#10;- Счётчик видимых/всего маршрутов у каждой папки&#10;&#10;Frontend — drag&amp;drop:&#10;- Перетаскивание файлов и папок прямо в окно (webkitGetAsEntry,&#10;  рекурсивный обход подпапок любой глубины)&#10;- Перетаскивание маршрутов, веток и папок внутри дерева&#10;- Подсветка цели drop, drop в корень дерева&#10;- Массовое перемещение: перетаскивание папки переносит всё поддерево&#10;&#10;Frontend — видимость маршрутов:&#10;- Чекбокс у каждого маршрута, у каждой папки (indeterminate + счётчик)&#10;- Кнопки ☑/☐ в hover-панели папки — «показать всё» / «скрыть всё»&#10;- Синхронизация: скрытие группы управляет и State.hiddenBranches,&#10;  и r.visible&#10;- Батч-PATCH на сервер при массовых операциях&#10;&#10;Frontend — карта:&#10;- Leaflet 1.9.4, preferCanvas, прореживание точек simplify() ~3 м&#10;- Детерминированный цвет маршрута по имени (stringToColor)&#10;- Halo под каждой линией: белая подложка weight 7 + цветная weight 3.5 —&#10;  маршруты видны на светлых, тёмных и спутниковых подложках&#10;- 6 стабильных подложек без API-ключей: OSM DE (дефолт),&#10;  Esri Улицы, Esri Спутник, Esri Топо, Carto Светлая, Carto Тёмная&#10;- errorTileUrl (прозрачный 1×1) для битых тайлов, фон #map по теме&#10;- Изоляция: клик по линии скрывает всё остальное и зумится на выбранную&#10;  ветвь; клик по пустому месту или ✕ в бейдже — снятие изоляции&#10;&#10;Frontend — прочее:&#10;- Поиск по имени, ветке, папке (debounce 180 мс)&#10;- Тёмная/светлая тема, состояние в localStorage&#10;- Экспорт видимых маршрутов в KMZ с опциональной группировкой по ветвям&#10;- Массовая замена подстроки в именах ветвей&#10;&#10;Удалено относительно ранних версий:&#10;- Вкладка «Ветви» и вся её инфраструктура (getBranchGroup,&#10;  getBranchSubgroup, getBranchSubsub, renderBranchFilter,&#10;  buildGroupHeader, buildBranchRow, setBranchesVisible, State.byBranch)&#10;- Подложки OSM Hot (tile.openstreetmap.fr) и OpenTopoMap —&#10;  нестабильны в РФ, отдают пустые тайлы&#10;&#10;Структура проекта:&#10;  app.py             — Flask-сервер и API&#10;  templates/index.html — всё приложение целиком&#10;  uploads/           — временные копии KMZ (создаётся автоматически)&#10;  requirements.txt   — Flask, simplekml&#10;  README.md&#10;&#10;Стек: Python 3.10+, Flask, simplekml, Leaflet 1.9.4, ванильный JS.">
+      <option name="closed" value="true" />
+      <created>1791881141776</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1791881141776</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State>
+              <option name="FILTERS">
+                <map>
+                  <entry key="branch">
+                    <value>
+                      <list>
+                        <option value="Part-Two" />
+                      </list>
+                    </value>
+                  </entry>
+                </map>
+              </option>
+            </State>
+          </value>
+        </entry>
+      </map>
+    </option>
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="сеть ВОЛС" />
