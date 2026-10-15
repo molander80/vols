@@ -49,6 +49,7 @@ button,input,select{font:inherit;color:inherit}
   border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 .btn.icon{padding:6px 9px}
+.btn:disabled{opacity:.6;cursor:default}
 .input{background:var(--panel-2);border:1px solid var(--line);padding:6px 10px;
   border-radius:8px;outline:none;min-width:200px;}
 .input:focus{border-color:var(--accent)}
@@ -190,6 +191,7 @@ button,input,select{font:inherit;color:inherit}
       <button class="btn" id="btnUploadFolder">📁 Папка</button>
       <button class="btn" id="btnNewFolder">📁+</button>
       <button class="btn" id="btnExport">💾 KMZ</button>
+      <button class="btn" id="btnExportTree" title="Сохранить дерево маршрутов на диск (uploads/tree/)">📥 Выгрузить дерево</button>
       <input type="file" id="fileInput" multiple accept=".kmz,.kml" style="display:none">
       <input type="file" id="folderInput" webkitdirectory multiple style="display:none">
     </div>
@@ -300,7 +302,7 @@ const State = {
     hiddenBranches: new Set(),
     mergeMarked: new Set(),
     isolation: null,
-    isolationPrev: null,   // { [routeId]: true } — что было visible до изоляции
+    isolationPrev: null,
     customFolders: new Set(),
     dragPayload: null,
     search: '',
@@ -573,10 +575,9 @@ function kmzHighlightRoutes(ids){
 }
 
 /* ==========================================================================
-   KMZ — изоляция (с изменением visible и обновлением галочек)
+   KMZ — изоляция
    ========================================================================== */
 function kmzRestoreIsolation(){
-  // Восстанавливает visible из K.isolationPrev и синхронизирует дерево.
   const prev = K.isolationPrev || {};
   const toShow = [];
   for (const rr of K.routes){
@@ -603,19 +604,16 @@ function kmzIsolate(r){
   const key = r.branch || '__none__';
   const isolKey = type === 'branch' ? key : r.id;
 
-  // Повторный клик — снять изоляцию и вернуть галочки к прежнему состоянию
   const same = K.isolation && K.isolation.type === type && K.isolation.key === isolKey;
   if (same){
     kmzRestoreIsolation();
     return;
   }
 
-  // Если уже что-то изолировано — сначала вернём прежнее состояние.
   if (K.isolation){
     kmzRestoreIsolation();
   }
 
-  // Запоминаем текущее состояние visible — чтобы вернуть при снятии изоляции
   K.isolationPrev = {};
   for (const rr of K.routes){
     K.isolationPrev[rr.id] = !!rr.visible;
@@ -623,7 +621,6 @@ function kmzIsolate(r){
 
   K.isolation = { type, key: isolKey };
 
-  // Кого оставляем видимым, кого скрываем
   const idsToShow = type === 'branch'
     ? K.routes.filter(x => (x.branch || '__none__') === key).map(x => x.id)
     : [r.id];
@@ -644,15 +641,12 @@ function kmzIsolate(r){
   kmzUpdateBadge();
   kmzUpdateAllTreeCheckboxes();
 
-  // Сохраняем на сервере батчами: сначала скрыть, потом явно показать.
   if (toHide.length)    patchRoutesBulk(toHide,    { visible: false });
   if (toShowNow.length) patchRoutesBulk(toShowNow, { visible: true });
 
-  // Развернуть дерево до нужной ветки и подсветить
   kmzExpandPathTo(r.folder || '', null);
   kmzHighlightRoutes(idsToShow);
 
-  // Подогнать карту под активные маршруты
   const pts = [];
   for (const id of idsToShow){
     const rr = K.routes.find(x => x.id === id);
@@ -769,8 +763,6 @@ function kmzRenderNode(node, container, parts, isRoot){
     cb.disabled = total === 0;
     cb.title = `${visible} из ${total} видимо`;
 
-    // Пока курсор на чекбоксе папки — отключаем draggable у строки,
-    // чтобы клик не превращался в drag-операцию.
     cb.addEventListener('mousedown', e => {
       e.stopPropagation();
       row.draggable = false;
@@ -828,7 +820,6 @@ function kmzRenderNode(node, container, parts, isRoot){
   for (const r of node.routes) container.appendChild(kmzBuildRouteRow(r));
 }
 
-/* Точечно обновить счётчики и чекбоксы папок без полной перерисовки дерева */
 function kmzUpdateFolderCounts(){
   const tree = $('folderTree');
   if (!tree) return;
@@ -871,7 +862,6 @@ function kmzUpdateFolderCounts(){
   }
 }
 
-/* Обновляет галочки ВСЕХ маршрутов в дереве по их r.visible */
 function kmzUpdateAllTreeCheckboxes(){
   const tree = $('folderTree');
   if (!tree) return;
@@ -910,8 +900,6 @@ function kmzBuildRouteRow(r){
   cb.type = 'checkbox';
   cb.checked = r.visible;
 
-  // Пока курсор на чекбоксе — отключаем draggable у строки,
-  // чтобы клик не превращался в drag-операцию.
   cb.addEventListener('mousedown', e => {
     e.stopPropagation();
     li.draggable = false;
@@ -1934,6 +1922,48 @@ $('btnExport').onclick = async () => {
   const a = document.createElement('a');
   a.href = url; a.download = 'routes.kmz'; a.click();
   URL.revokeObjectURL(url);
+};
+
+$('btnExportTree').onclick = async () => {
+  if (!K.routes.length){
+    alert('Дерево пустое — нечего выгружать.');
+    return;
+  }
+
+  const visibleCount = K.routes.filter(r => r.visible).length;
+  const onlyVisible = confirm(
+    'Выгружать только видимые маршруты?\n\n' +
+    'OK — только видимые (' + visibleCount + ' шт.)\n' +
+    'Отмена — все (' + K.routes.length + ' шт.)'
+  );
+
+  const btn = $('btnExportTree');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Собираю…';
+
+  try {
+    const res = await fetch('/export_tree', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ only_visible: onlyVisible }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'routes_tree.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(e){
+    console.error('export_tree failed', e);
+    alert('Не удалось выгрузить дерево: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
 };
 
 let dragCounter = 0;
