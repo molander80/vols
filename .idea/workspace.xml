@@ -4,7 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat: KMZ + GPON viewer с персистентным состоянием, изоляцией и drag&amp;drop&#10;&#10;Объединение двух проектов (KMZ Routes Viewer и GPON Viewer) в одно&#10;приложение с переключателем режимов. Backend на Flask, frontend —&#10;один HTML-файл, карта общая для обоих режимов.&#10;&#10;Backend (app.py):&#10;- Парсер KML без XML-namespace: _strip_ns + рекурсивный обход,&#10;  работает с Google Earth, SAS.Planet, GPS-трекерами&#10;- /upload с сохранением структуры папок: folder строится из&#10;  относительного пути, первый сегмент (имя выбранной папки) отрезается&#10;- /merge — объединение маршрутов, /export — KMZ через simplekml&#10;- PATCH /route/&lt;id&gt; принимает name, branch, folder, visible&#10;- Персистентность: data/state.json, атомарная запись через&#10;  tmp-файл + os.replace, thread-safe (_state_lock)&#10;- /folders (GET/POST/DELETE) и /folders/rename — сохранение&#10;  пользовательских пустых папок&#10;- /state/export, /state/import — резервное копирование&#10;- Серверные эндпоинты GPON: /gpon/geo (xlsx через openpyxl),&#10;  /gpon/vgroups (CSV с автоопределением кодировки и разделителя)&#10;&#10;Frontend — режимы:&#10;- Переключатель «Маршруты KMZ» / «GPON» в шапке&#10;- Слои обоих режимов сосуществуют на карте, переключение меняет&#10;  только сайдбар и панель контролов, карта не трогается&#10;- Свой State на каждый режим (State.kmz, State.gpon)&#10;&#10;Frontend — KMZ:&#10;- Дерево папок: вложенность, CRUD, drag&amp;drop маршрутов и папок&#10;- Массовая видимость: чекбокс у папки с indeterminate и счётчиком&#10;  видимых/всего, кнопки ☑/☐ в hover&#10;- Изоляция ветви по клику на линию: halo неинтерактивен, stopPropagation,&#10;  повторный клик снимает; бейдж изоляции в шапке с кнопкой сброса;&#10;  сброс кликом по пустому месту карты&#10;- Контрастные линии: белая halo (weight 7) + цветная (weight 3.5),&#10;  детерминированный цвет по имени&#10;- Прореживание точек ~3 м (kmzSimplify)&#10;- Автоочистка пустых пользовательских папок при переносе маршрутов&#10;&#10;Frontend — GPON:&#10;- Разбор xlsx в браузере (XLSX.js), CSV с fallback по кодировкам&#10;  (utf-8, windows-1251, koi8-r, iso-8859-5)&#10;- Фильтр 3 уровня: группа (slav*/bdcom-*/Прочие) → подгруппа →&#10;  под-подгруппа → ветви, синхронизация чекбоксов через indeterminate&#10;- Статусы ONU: активна/отключена/заблокирована/другое&#10;- Маркеры через markerClusterGroup с chunkedLoading&#10;- Hover-попапы, поиск с подсветкой circleMarker&#10;&#10;Frontend — общее:&#10;- Поиск режим-зависимый (debounce 180 мс)&#10;- 6 стабильных подложек: OSM DE (дефолт), Esri Улицы/Спутник/Топо,&#10;  Carto Светлая/Тёмная; без API-ключей&#10;- Тёмная/светлая тема, состояние в localStorage&#10;- Экспорт KMZ с опциональной группировкой по ветвям&#10;- Drag&amp;drop файлов и папок в окно (webkitGetAsEntry, рекурсивный обход)&#10;&#10;Персистентность:&#10;- data/state.json хранит routes, customFolders, next_id&#10;- Автосохранение после upload, PATCH, DELETE, merge, /folders*&#10;- Загрузка при старте (_load_state до app.run)&#10;- Перезапуск сервера больше не теряет переименования ветвей,&#10;  расположение маршрутов и пользовательские папки&#10;&#10;Прочее:&#10;- .gitignore: data/, uploads/, *.kmz, *.kml, __pycache__, .venv&#10;- requirements.txt: Flask, simplekml, openpyxl (опционально)">
+    <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat(kmz): снятие галочек у неактивных маршрутов при изоляции на карте&#10;&#10;При клике по линии маршрута на карте в KMZ-режиме у всех&#10;неактивных маршрутов в дереве снимаются галочки (visible=false),&#10;у активного — остаются. При снятии изоляции (повторный клик по&#10;линии, клик по пустому месту карты, кнопка ✕ в бейдже) состояние&#10;галочек восстанавливается к тому, что было до изоляции.&#10;&#10;Что добавлено:&#10;  * State.kmz.isolationPrev — снимок visible для всех маршрутов&#10;    перед изоляцией; используется для восстановления при снятии.&#10;  * kmzRestoreIsolation() — восстанавливает visible из isolationPrev,&#10;    синхронизирует галочки в дереве, одним батчем возвращает&#10;    visible=true для тех, кто был виден.&#10;  * kmzIsolate(r) переписан: при изоляции выставляет visible&#10;    по принципу «активные — true, все остальные — false», обновляет&#10;    галочки и счётчики папок без полной перерисовки дерева, шлёт&#10;    два PATCH /routes/bulk (скрыть неактивные + показать активные).&#10;  * kmzUpdateAllTreeCheckboxes() — точечно синхронизирует чекбоксы&#10;    всех маршрутов с их r.visible, без kmzRenderTree().&#10;  * isoBadgeClear и map.on('click') теперь вызывают&#10;    kmzRestoreIsolation() вместо простого сброса K.isolation.&#10;&#10;Попутные правки KMZ-дерева (по замечаниям UI):&#10;  * Чекбокс папки: клик снимается/ставится корректно, mousedown/mouseup&#10;    временно отключают draggable у строки, чтобы клик не превращался&#10;    в drag. Логика onchange передаёт cb.checked напрямую в&#10;    kmzSetFolderVisible (инверсия устранена).&#10;  * Чекбокс отдельного маршрута: аналогичная защита от drag,&#10;    stopPropagation на click/pointerdown, карта обновляется сразу,&#10;    PATCH /route/&lt;id&gt; уходит в фоне.&#10;  * kmzUpdateFolderCounts() — точечно обновляет счётчики N/M и&#10;    checked/indeterminate у чекбоксов папок без перерисовки дерева.&#10;  * Убраны кнопки ☑ / ☐ из hover-меню папки — остались только&#10;    ✏️ (переименовать), 📁+ (подпапка), 🗑 (удалить). Показ/скрытие&#10;    всей папки теперь через клик по её чекбоксу.&#10;  * favicon 404 закрыт через &lt;link rel=&quot;icon&quot; href=&quot;data:,&quot;&gt;.&#10;&#10;Файлы: index.html">
+      <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -15,18 +16,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "molander80"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;molander80&quot;
   }
-}]]></component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/molander80/vols.git",
-    "accountId": "2465a757-646d-49bd-9dd0-9cf04623ae79"
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/molander80/vols.git&quot;,
+    &quot;accountId&quot;: &quot;2465a757-646d-49bd-9dd0-9cf04623ae79&quot;
   }
-}]]></component>
+}</component>
   <component name="ProjectColorInfo">{
   &quot;customColor&quot;: &quot;&quot;,
   &quot;associatedIndex&quot;: 7
