@@ -99,6 +99,13 @@ button,input,select{font:inherit;color:inherit}
   padding:0 3px;opacity:.7;font-size:12px}
 .route-row.merge-marked{background:rgba(56,189,248,.15)}
 
+/* Подсветка маршрута после клика на карте */
+.route-row.highlighted{
+  background: rgba(56,189,248,.35);
+  outline: 1px solid var(--accent);
+  transition: background .15s ease, outline-color .15s ease;
+}
+
 /* ---------- GPON filter tree ---------- */
 .filter-item{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;
   cursor:pointer;user-select:none;font-size:12.5px}
@@ -171,7 +178,6 @@ button,input,select{font:inherit;color:inherit}
       <button id="modeGpon" data-mode="gpon">📡 GPON</button>
     </div>
 
-    <!-- KMZ-specific -->
     <div id="kmzControls" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn" id="btnUploadFiles">📂 KMZ</button>
       <button class="btn" id="btnUploadFolder">📁 Папка</button>
@@ -181,7 +187,6 @@ button,input,select{font:inherit;color:inherit}
       <input type="file" id="folderInput" webkitdirectory multiple style="display:none">
     </div>
 
-    <!-- GPON-specific -->
     <div id="gponControls" style="display:none;gap:8px;flex-wrap:wrap;align-items:center">
       <label class="file-btn" id="fileGeoBtn">📂 Excel (geo*.xlsx)
         <input type="file" id="fileGeo" accept=".xlsx,.xls" multiple>
@@ -337,7 +342,7 @@ document.querySelectorAll('.mode-switch button').forEach(b => {
 });
 
 /* ==========================================================================
-   KMZ — построение слоёв
+   KMZ — слои
    ========================================================================== */
 function kmzStringToColor(str){
   let h = 0; for (let i=0;i<str.length;i++) h = (h*31 + str.charCodeAt(i)) | 0;
@@ -435,6 +440,99 @@ function kmzApplyFilters(){
   }
 }
 
+/* ==========================================================================
+   KMZ — дерево: сворачивание, раскрытие пути, подсветка
+   ========================================================================== */
+
+/** Сворачивает все папки в дереве */
+function kmzCollapseAllFolders(){
+  const tree = $('folderTree');
+  if (!tree) return;
+  tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.add('collapsed'));
+  tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
+}
+
+/** Раскрывает все папки в дереве (на всякий случай — полезно) */
+function kmzExpandAllFolders(){
+  const tree = $('folderTree');
+  if (!tree) return;
+  tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.remove('collapsed'));
+  tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▾');
+}
+
+/**
+ * Раскрывает путь до указанной папки (folderPath),
+ * сворачивая все остальные. Если routeId передан — подсветит маршрут.
+ */
+function kmzExpandPathTo(folderPath, routeId){
+  kmzCollapseAllFolders();
+  const tree = $('folderTree');
+  if (!tree) return;
+
+  const parts = (folderPath || '').split('/').filter(Boolean);
+  let container = tree;
+
+  for (const part of parts){
+    let found = null;
+    for (const row of container.querySelectorAll(':scope > .folder-row')){
+      const nameSpan = row.querySelector('.folder-name');
+      if (nameSpan && nameSpan.textContent === part){ found = row; break; }
+    }
+    if (!found) break;
+
+    const children = found.nextElementSibling;
+    if (children && children.classList.contains('folder-children')){
+      children.classList.remove('collapsed');
+      const toggle = found.querySelector('.folder-toggle');
+      if (toggle) toggle.textContent = '▾';
+      container = children;
+    } else break;
+  }
+
+  if (routeId != null) kmzHighlightRoute(routeId);
+}
+
+/** Подсвечивает один маршрут и скроллит к нему */
+function kmzHighlightRoute(routeId){
+  const tree = $('folderTree');
+  if (!tree) return;
+  tree.querySelectorAll('.route-row.highlighted')
+      .forEach(el => el.classList.remove('highlighted'));
+  const row = tree.querySelector(`.route-row[data-id="${routeId}"]`);
+  if (!row) return;
+  row.classList.add('highlighted');
+  try { row.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
+  clearTimeout(kmzHighlightRoute._t);
+  kmzHighlightRoute._t = setTimeout(() => row.classList.remove('highlighted'), 2000);
+}
+
+/** Подсвечивает несколько маршрутов (для изоляции ветви) */
+function kmzHighlightRoutes(ids){
+  const tree = $('folderTree');
+  if (!tree) return;
+  tree.querySelectorAll('.route-row.highlighted')
+      .forEach(el => el.classList.remove('highlighted'));
+  let first = null;
+  for (const id of ids){
+    const row = tree.querySelector(`.route-row[data-id="${id}"]`);
+    if (row){
+      row.classList.add('highlighted');
+      if (!first) first = row;
+    }
+  }
+  if (first){
+    try { first.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
+  }
+  clearTimeout(kmzHighlightRoutes._t);
+  kmzHighlightRoutes._t = setTimeout(() => {
+    tree.querySelectorAll('.route-row.highlighted')
+        .forEach(el => el.classList.remove('highlighted'));
+  }, 2000);
+}
+
+/* ==========================================================================
+   KMZ — изоляция
+   ========================================================================== */
 function kmzIsolate(r){
   const type = r.branch ? 'branch' : 'route';
   const key = r.branch || '__none__';
@@ -452,11 +550,18 @@ function kmzIsolate(r){
   kmzApplyFilters();
   kmzUpdateBadge();
 
-  const ids = type === 'branch'
+  // Раскрываем путь до кликнутого маршрута, сворачивая всё остальное
+  kmzExpandPathTo(r.folder || '', null);
+
+  // Подсвечиваем: если изолируется ветвь — все её маршруты, иначе один
+  const idsToHighlight = type === 'branch'
     ? K.routes.filter(x => (x.branch || '__none__') === key).map(x => x.id)
     : [r.id];
+  kmzHighlightRoutes(idsToHighlight);
+
+  // Зум на изоляцию
   const pts = [];
-  for (const id of ids){
+  for (const id of idsToHighlight){
     const rr = K.routes.find(x => x.id === id);
     if (!rr) continue;
     for (const p of rr.points) pts.push([p[0], p[1]]);
@@ -496,7 +601,7 @@ map.on('click', (e) => {
 });
 
 /* ==========================================================================
-   KMZ — дерево папок
+   KMZ — дерево
    ========================================================================== */
 function kmzBuildTree(){
   const root = { name:'', children:new Map(), routes:[] };
@@ -1109,7 +1214,7 @@ function gponParseVgroups(text){
   return { matched, unmatched, total: onus.length };
 }
 
-/* --- Stats & UI --- */
+/* --- Stats & filters UI --- */
 function gponUpdateStats(){
   let matched = 0;
   for (const o of G.onus) if (o.lat != null) matched++;
