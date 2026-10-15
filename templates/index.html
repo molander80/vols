@@ -73,6 +73,7 @@ button,input,select{font:inherit;color:inherit}
   color:var(--muted);margin:14px 0 6px;font-weight:600;}
 .side-title:first-child{margin-top:0}
 
+/* ---------- KMZ tree ---------- */
 .folder-row{display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:4px;
   font-size:13px;user-select:none;cursor:pointer}
 .folder-row:hover{background:var(--panel)}
@@ -104,11 +105,21 @@ button,input,select{font:inherit;color:inherit}
   transition: background .15s ease, outline-color .15s ease;
 }
 
+/* ---------- GPON filter tree ---------- */
 .filter-item{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;
   cursor:pointer;user-select:none;font-size:12.5px}
 .filter-item:hover{background:var(--panel)}
 .filter-item input{accent-color:var(--accent)}
 .filter-item .cnt{margin-left:auto;color:var(--muted);font-size:11.5px}
+
+/* Подсветка ветки при клике по маркеру ONU на карте */
+.filter-item.branch-highlight{
+  background: rgba(56,189,248,.28);
+  outline: 1px solid var(--accent);
+}
+.filter-item.branch-highlight .name{
+  color: var(--accent);
+}
 
 #filter-branch-list .filter-item .name{word-break:break-all;line-height:1.25;
   color:var(--switch);font-weight:600;font-size:12px}
@@ -626,6 +637,8 @@ map.on('click', (e) => {
     kmzApplyFilters();
     kmzUpdateBadge();
   }
+  // Снять подсветку ветки в дереве GPON, если клик был по пустому месту карты
+  if (!stopped) gponClearBranchHighlight();
 });
 
 /* ==========================================================================
@@ -1124,7 +1137,6 @@ async function gponSaveOnus(){
   }
 }
 
-// Полное сохранение — резерв (не вызывается из UI, но пусть будет).
 async function gponSaveState(){
   try {
     await fetch('/gpon/state', {
@@ -1244,12 +1256,7 @@ $('clear-gpon-data').onclick = gponClearState;
    ========================================================================== */
 const GPON_ICON_CACHE = {};
 
-// Индекс: branch → массив L.marker. Строится в gponBuildLayers,
-// используется в gponApplyFilters. Обход маркеров один раз, а не N×M.
 let _markersByBranch = new Map();
-
-// Текущий набор маркеров, реально находящихся в каждом кластере.
-// Нужен, чтобы не вызывать clearLayers+addLayers, если набор не изменился.
 let _clusterMembers = new Map();
 
 function gponGetIcon(color){
@@ -1263,6 +1270,7 @@ function gponGetIcon(color){
 }
 
 let __curPopup = null;
+
 function gponBindPopup(layer){
   layer.bindPopup(gponBuildPopup(layer.__onu), {
     closeButton:false, offset:[0,-5], autoClose:false, closeOnClick:false, autoPan:false,
@@ -1272,7 +1280,13 @@ function gponBindPopup(layer){
     __curPopup = this;
     this.openPopup();
   });
+  // Клик по маркеру: подсветить только эту ветку в дереве, снять со всех остальных.
+  layer.on('click', function(e){
+    L.DomEvent.stopPropagation(e);
+    gponHighlightBranchInTree(layer.__onu.branch);
+  });
 }
+
 function gponBuildPopup(o){
   return `<div class="onu-popup">
     <div><b>Ветка:</b> ${esc(o.branch)}</div>
@@ -1324,7 +1338,6 @@ function gponApplyFilters(){
   const activeStatusFilter = fs.size > 0;
   const activeBranchFilter = fb.size > 0;
 
-  // Один проход по всем маркерам — O(onus), а не O(branches × onus).
   const wanted = new Map();
   for (const m of G.allMarkers){
     const o = m.__onu;
@@ -1360,6 +1373,52 @@ function gponApplyFilters(){
     cluster.addLayers(arr);
     _clusterMembers.set(branch, new Set(arr));
   }
+}
+
+/* ==========================================================================
+   GPON — подсветка ветки в дереве при клике по маркеру
+   ========================================================================== */
+function gponClearBranchHighlight(){
+  const root = $('filter-branch-list');
+  if (!root) return;
+  root.querySelectorAll('.filter-item.branch-highlight')
+      .forEach(el => el.classList.remove('branch-highlight'));
+}
+
+function gponHighlightBranchInTree(branch){
+  const root = $('filter-branch-list');
+  if (!root) return;
+
+  // Снять со всех — оставить только одну.
+  gponClearBranchHighlight();
+  if (!branch) return;
+
+  // Найти нужный filter-item по value чекбокса.
+  const all = root.querySelectorAll('.filter-item');
+  let target = null;
+  for (const el of all){
+    const cb = el.querySelector('input[data-filter="branch"]');
+    if (cb && cb.value === branch){ target = el; break; }
+  }
+  if (!target) return;
+
+  target.classList.add('branch-highlight');
+
+  // Раскрыть все родительские свёрнутые группы, чтобы ветка была видна.
+  let p = target.parentElement;
+  while (p && p !== root){
+    if (p.classList.contains('collapsed')){
+      p.classList.remove('collapsed');
+      const head = p.querySelector(':scope > .branch-group-head, :scope > .branch-subgroup-head, :scope > .branch-subsub-head');
+      if (head){
+        const tt = head.querySelector('.toggle-g, .toggle-s, .toggle-ss');
+        if (tt) tt.textContent = '▾';
+      }
+    }
+    p = p.parentElement;
+  }
+
+  try { target.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
 }
 
 /* ==========================================================================
@@ -1595,6 +1654,9 @@ function gponFilterClick(e){
 function gponFilterChange(e){
   const t = e.target;
   if (!(t instanceof HTMLInputElement)) return;
+
+  // Пользователь сам взаимодействует с деревом — снимаем подсветку с карты
+  gponClearBranchHighlight();
 
   if (t.matches('input[data-filter="branch"]')){
     const set = G.filters.branch;
@@ -1867,6 +1929,7 @@ $('reset-filters').onclick = () => {
   $('filter-branch').value = '';
   document.querySelectorAll('#filter-branch-list .filter-item, #filter-branch-list .branch-subsub, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-group')
     .forEach(el => el.style.display = '');
+  gponClearBranchHighlight();
   gponApplyFilters();
 };
 
