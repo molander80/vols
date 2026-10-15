@@ -24,18 +24,29 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # ============================ STATE ============================
 ROUTES = {}
 _next_id = 1
-_state_lock = threading.Lock()
+_state_lock = threading.RLock()          # RLock: позволяет вложенный захват
 PERSIST = {'customFolders': set()}
+
+# GPON-состояние: geo-словарь, список ONU и имена загруженных файлов.
+# Живёт в памяти и персистится в data/state.json рядом с KMZ.
+GPON = {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}
 
 
 def _save_state():
-    payload = {
-        'next_id': _next_id,
-        'customFolders': sorted(PERSIST['customFolders']),
-        'routes': list(ROUTES.values()),
-    }
-    tmp = STATE_FILE + '.tmp'
+    # ВНИМАНИЕ: _save_state() сама захватывает _state_lock (RLock → реентерабельно).
     with _state_lock:
+        payload = {
+            'next_id': _next_id,
+            'customFolders': sorted(PERSIST['customFolders']),
+            'routes': list(ROUTES.values()),
+            'gpon': {
+                'geo': dict(GPON['geo']),
+                'onus': list(GPON['onus']),
+                'geoFiles': list(GPON.get('geoFiles', [])),
+                'vgFile': GPON.get('vgFile'),
+            },
+        }
+        tmp = STATE_FILE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, STATE_FILE)
@@ -43,6 +54,13 @@ def _save_state():
 
 def _load_state():
     global _next_id
+
+    # Сброс GPON в дефолт — на случай, если файла нет или он битый.
+    GPON['geo'] = {}
+    GPON['onus'] = []
+    GPON['geoFiles'] = []
+    GPON['vgFile'] = None
+
     if not os.path.exists(STATE_FILE):
         return
     try:
@@ -66,8 +84,16 @@ def _load_state():
             'visible': bool(r.get('visible', True)),
             'points': r.get('points', []),
         }
+
     PERSIST['customFolders'] = set(payload.get('customFolders', []))
     _next_id = int(payload.get('next_id', (max(ROUTES) + 1) if ROUTES else 1))
+
+    # Восстанавливаем GPON (если секция есть).
+    gpon = payload.get('gpon') or {}
+    GPON['geo'] = gpon.get('geo') or {}
+    GPON['onus'] = gpon.get('onus') or []
+    GPON['geoFiles'] = gpon.get('geoFiles') or []
+    GPON['vgFile'] = gpon.get('vgFile')
 
 
 def _touch_routes():
@@ -307,7 +333,8 @@ def folders_rename():
 @app.route('/state/export', methods=['GET'])
 def state_export():
     if not os.path.exists(STATE_FILE):
-        return jsonify({'routes': [], 'customFolders': [], 'next_id': 1})
+        return jsonify({'routes': [], 'customFolders': [], 'next_id': 1,
+                        'gpon': {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}})
     return send_file(STATE_FILE, mimetype='application/json',
                      as_attachment=True, download_name='state.json')
 
@@ -323,17 +350,21 @@ def state_import():
     except Exception as e:
         return jsonify({'error': str(e)}), 400
     with _state_lock:
-        with open(STATE_FILE, 'w', encoding='utf-8') as out:
+        tmp = STATE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as out:
             json.dump(payload, out, ensure_ascii=False)
+        os.replace(tmp, STATE_FILE)
     _load_state()
     return jsonify({'ok': True,
                     'routes': len(ROUTES),
-                    'folders': len(PERSIST['customFolders'])})
+                    'folders': len(PERSIST['customFolders']),
+                    'geo': len(GPON['geo']),
+                    'onus': len(GPON['onus'])})
 
 
 # ============================ GPON (server-side) ============================
-GPON = {'geo': {}, 'onus': []}
-
+# Само состояние GPON объявлено выше (см. блок STATE), чтобы _save_state()
+# и _load_state() могли его сериализовать/восстанавливать.
 
 def _norm_addr(s: str) -> str:
     if not s:
@@ -362,7 +393,9 @@ def gpon_geo():
         return jsonify({'error': 'openpyxl not installed'}), 500
     files = request.files.getlist('files[]')
     out = {}
+    names = []
     for f in files:
+        names.append(f.filename or '')
         try:
             wb = load_workbook(io.BytesIO(f.read()), read_only=True, data_only=True)
             ws = wb[wb.sheetnames[0]]
@@ -395,7 +428,9 @@ def gpon_geo():
         except Exception as e:
             print('geo parse error', f.filename, e)
     GPON['geo'] = out
-    return jsonify({'count': len(out)})
+    GPON['geoFiles'] = names
+    _save_state()
+    return jsonify({'count': len(out), 'files': names})
 
 
 @app.route('/gpon/vgroups', methods=['POST'])
@@ -454,8 +489,53 @@ def gpon_vgroups():
             matched += 1
         onus.append(o)
     GPON['onus'] = onus
+    GPON['vgFile'] = f.filename
+    _save_state()
     return jsonify({'total': len(onus), 'matched': matched,
                     'unmatched': len(onus) - matched})
+
+
+# ============================ GPON STATE ============================
+@app.route('/gpon/state', methods=['GET'])
+def gpon_state_get():
+    with _state_lock:
+        return jsonify({
+            'geo': GPON['geo'],
+            'onus': GPON['onus'],
+            'geoFiles': GPON.get('geoFiles', []),
+            'vgFile': GPON.get('vgFile'),
+        })
+
+
+@app.route('/gpon/state', methods=['POST'])
+def gpon_state_post():
+    data = request.get_json(force=True, silent=True) or {}
+    with _state_lock:
+        if 'geo' in data and isinstance(data['geo'], dict):
+            GPON['geo'] = data['geo']
+        if 'onus' in data and isinstance(data['onus'], list):
+            GPON['onus'] = data['onus']
+        if 'geoFiles' in data:
+            GPON['geoFiles'] = list(data.get('geoFiles') or [])
+        if 'vgFile' in data:
+            GPON['vgFile'] = data.get('vgFile')
+    _save_state()
+    return jsonify({
+        'ok': True,
+        'geo': len(GPON['geo']),
+        'onus': len(GPON['onus']),
+    })
+
+
+@app.route('/gpon/state', methods=['DELETE'])
+def gpon_state_delete():
+    with _state_lock:
+        GPON['geo'] = {}
+        GPON['onus'] = []
+        GPON['geoFiles'] = []
+        GPON['vgFile'] = None
+    _save_state()
+    return jsonify({'ok': True})
 
 
 # ============================ BOOT ============================

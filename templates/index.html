@@ -98,8 +98,6 @@ button,input,select{font:inherit;color:inherit}
 .route-actions button{background:none;border:none;color:var(--text);cursor:pointer;
   padding:0 3px;opacity:.7;font-size:12px}
 .route-row.merge-marked{background:rgba(56,189,248,.15)}
-
-/* Подсветка маршрута после клика на карте */
 .route-row.highlighted{
   background: rgba(56,189,248,.35);
   outline: 1px solid var(--accent);
@@ -195,6 +193,7 @@ button,input,select{font:inherit;color:inherit}
         <input type="file" id="fileVg" accept=".csv,.txt">
       </label>
       <button class="btn" id="reset-filters">Сбросить фильтры</button>
+      <button class="btn" id="clear-gpon-data" title="Удалить сохранённые geo и vgroups">🗑 Очистить данные</button>
     </div>
 
     <input class="input" id="search" placeholder="🔎 Поиск…">
@@ -443,8 +442,6 @@ function kmzApplyFilters(){
 /* ==========================================================================
    KMZ — дерево: сворачивание, раскрытие пути, подсветка
    ========================================================================== */
-
-/** Сворачивает все папки в дереве */
 function kmzCollapseAllFolders(){
   const tree = $('folderTree');
   if (!tree) return;
@@ -452,7 +449,6 @@ function kmzCollapseAllFolders(){
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
 }
 
-/** Раскрывает все папки в дереве (на всякий случай — полезно) */
 function kmzExpandAllFolders(){
   const tree = $('folderTree');
   if (!tree) return;
@@ -460,10 +456,6 @@ function kmzExpandAllFolders(){
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▾');
 }
 
-/**
- * Раскрывает путь до указанной папки (folderPath),
- * сворачивая все остальные. Если routeId передан — подсветит маршрут.
- */
 function kmzExpandPathTo(folderPath, routeId){
   kmzCollapseAllFolders();
   const tree = $('folderTree');
@@ -492,7 +484,6 @@ function kmzExpandPathTo(folderPath, routeId){
   if (routeId != null) kmzHighlightRoute(routeId);
 }
 
-/** Подсвечивает один маршрут и скроллит к нему */
 function kmzHighlightRoute(routeId){
   const tree = $('folderTree');
   if (!tree) return;
@@ -506,7 +497,6 @@ function kmzHighlightRoute(routeId){
   kmzHighlightRoute._t = setTimeout(() => row.classList.remove('highlighted'), 2000);
 }
 
-/** Подсвечивает несколько маршрутов (для изоляции ветви) */
 function kmzHighlightRoutes(ids){
   const tree = $('folderTree');
   if (!tree) return;
@@ -550,16 +540,13 @@ function kmzIsolate(r){
   kmzApplyFilters();
   kmzUpdateBadge();
 
-  // Раскрываем путь до кликнутого маршрута, сворачивая всё остальное
   kmzExpandPathTo(r.folder || '', null);
 
-  // Подсвечиваем: если изолируется ветвь — все её маршруты, иначе один
   const idsToHighlight = type === 'branch'
     ? K.routes.filter(x => (x.branch || '__none__') === key).map(x => x.id)
     : [r.id];
   kmzHighlightRoutes(idsToHighlight);
 
-  // Зум на изоляцию
   const pts = [];
   for (const id of idsToHighlight){
     const rr = K.routes.find(x => x.id === id);
@@ -601,7 +588,7 @@ map.on('click', (e) => {
 });
 
 /* ==========================================================================
-   KMZ — дерево
+   KMZ — дерево (рендер)
    ========================================================================== */
 function kmzBuildTree(){
   const root = { name:'', children:new Map(), routes:[] };
@@ -830,7 +817,6 @@ async function kmzMoveRoutes(ids, folder){
   kmzRenderTree();
   await Promise.all(affected.map(r => patchRoute(r.id, { folder })));
 
-  // автоочистка пустых пользовательских папок
   for (const old of oldFolders){
     const still = K.routes.some(r => r.folder === old || (r.folder||'').startsWith(old + '/'));
     if (!still && K.customFolders.has(old)){
@@ -975,7 +961,7 @@ async function kmzUpload(files){
 }
 
 /* ==========================================================================
-   GPON
+   GPON — парсинг
    ========================================================================== */
 function gponDecodeBytes(buf){
   for (const enc of ['utf-8','windows-1251','koi8-r','iso-8859-5']){
@@ -1050,6 +1036,125 @@ function gponStatusKey(s){
 const GPON_STATUS_COLOR = { active:'#22c55e', off:'#94a3b8', block:'#ef4444', other:'#22c55e' };
 const GPON_STATUS_CLASS = { active:'stat-active', off:'stat-off', block:'stat-block', other:'' };
 
+/* ==========================================================================
+   GPON — сохранение/восстановление состояния
+   ========================================================================== */
+async function gponSaveState(){
+  try {
+    const payload = {
+      geo:  Object.fromEntries(G.geo),
+      onus: G.onus,
+      geoFiles: G.geoFiles,
+      vgFile: G.vgFile,
+    };
+    await fetch('/gpon/state', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+  } catch(e){
+    console.warn('gpon state save failed', e);
+  }
+}
+
+async function gponLoadState(){
+  try {
+    const res = await fetch('/gpon/state');
+    const data = await res.json();
+    const hasGeo  = data.geo  && Object.keys(data.geo).length > 0;
+    const hasOnus = data.onus && data.onus.length > 0;
+    if (!hasGeo && !hasOnus) return false;
+
+    G.geo = new Map(Object.entries(data.geo || {}));
+
+    G.onus = (data.onus || []).map(o => {
+      const g = G.geo.get(gponNormAddr(o.address));
+      return {
+        ...o,
+        lat: g ? g.lat : null,
+        lng: g ? g.lng : null,
+        _statusKey: gponStatusKey(o.status || ''),
+      };
+    });
+
+    G.byBranch = new Map();
+    for (const o of G.onus){
+      if (!G.byBranch.has(o.branch)) G.byBranch.set(o.branch, []);
+      G.byBranch.get(o.branch).push(o);
+    }
+    G.geoFiles = data.geoFiles || [];
+    G.vgFile   = data.vgFile   || '';
+
+    if (G.geoFiles.length){
+      $('fileGeoBtn').classList.add('active');
+      $('fileGeoBtn').childNodes[0].nodeValue = `📂 Excel × ${G.geoFiles.length} `;
+    }
+    if (G.vgFile){
+      $('fileVgBtn').classList.add('active');
+      $('fileVgBtn').childNodes[0].nodeValue = `📂 ${G.vgFile} `;
+    }
+
+    const matched = G.onus.filter(o => o.lat != null).length;
+    $('diag').textContent =
+      `geo: ${G.geo.size} адресов` +
+      (G.geoFiles.length ? ` (файлов: ${G.geoFiles.length})` : '') + `\n` +
+      `ONU: ${G.onus.length}, на карте ${matched}` +
+      (G.vgFile ? ` (${G.vgFile})` : '');
+
+    if (G.onus.length){
+      gponBuildStatusFilter();
+      gponBuildBranchFilter();
+      gponBuildLayers();
+      gponUpdateStats();
+    }
+    return true;
+  } catch(e){
+    console.warn('gpon state load failed', e);
+    return false;
+  }
+}
+
+async function gponClearState(){
+  if (!confirm('Удалить сохранённые geo и vgroups? Это действие необратимо.')) return;
+
+  for (const k in G.branchLayers){
+    map.removeLayer(G.branchLayers[k]);
+    delete G.branchLayers[k];
+  }
+  G.allMarkers.length = 0;
+
+  G.geo = new Map();
+  G.onus = [];
+  G.byBranch = new Map();
+  G.geoFiles = [];
+  G.vgFile = '';
+  G.searchMode = false;
+  if (G.searchHighlightLayer){
+    map.removeLayer(G.searchHighlightLayer);
+    G.searchHighlightLayer = null;
+  }
+
+  $('fileGeoBtn').classList.remove('active');
+  $('fileGeoBtn').childNodes[0].nodeValue = '📂 Excel (geo*.xlsx) ';
+  $('fileVgBtn').classList.remove('active');
+  $('fileVgBtn').childNodes[0].nodeValue = '📂 vgroups.csv ';
+  $('filter-status').innerHTML = '';
+  $('filter-branch-list').innerHTML = '';
+  $('diag').textContent = 'Загрузите Excel (geo*.xlsx) и vgroups.csv.';
+  gponUpdateStats();
+
+  try {
+    await fetch('/gpon/state', { method: 'DELETE' });
+  } catch(e){
+    console.warn('gpon state delete failed', e);
+  }
+}
+
+$('clear-gpon-data').onclick = gponClearState;
+
+/* ==========================================================================
+   GPON — маркеры и попапы
+   ========================================================================== */
 const GPON_ICON_CACHE = {};
 function gponGetIcon(color){
   if (GPON_ICON_CACHE[color]) return GPON_ICON_CACHE[color];
@@ -1141,7 +1246,9 @@ function gponApplyFilters(){
   });
 }
 
-/* --- Geo Excel --- */
+/* ==========================================================================
+   GPON — разбор Excel и CSV
+   ========================================================================== */
 function gponParseGeoWorkbook(buf, fname, out){
   const wb = XLSX.read(buf, { type:'array' });
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1, raw:true });
@@ -1170,7 +1277,6 @@ function gponParseGeoWorkbook(buf, fname, out){
   return { added, skipped };
 }
 
-/* --- Vgroups CSV --- */
 function gponParseVgroups(text){
   const first = text.split(/\r?\n/)[0] || '';
   const delim = gponDetectDelim(first);
@@ -1214,7 +1320,9 @@ function gponParseVgroups(text){
   return { matched, unmatched, total: onus.length };
 }
 
-/* --- Stats & filters UI --- */
+/* ==========================================================================
+   GPON — статистика и фильтры
+   ========================================================================== */
 function gponUpdateStats(){
   let matched = 0;
   for (const o of G.onus) if (o.lat != null) matched++;
@@ -1486,7 +1594,7 @@ function gponSearch(q){
 }
 
 /* ==========================================================================
-   СОБЫТИЯ
+   СОБЫТИЯ — KMZ
    ========================================================================== */
 $('btnUploadFiles').onclick = () => $('fileInput').click();
 $('btnUploadFolder').onclick = () => $('folderInput').click();
@@ -1522,7 +1630,6 @@ $('btnExport').onclick = async () => {
   URL.revokeObjectURL(url);
 };
 
-/* Drag&drop upload */
 let dragCounter = 0;
 window.addEventListener('dragenter', e => {
   if (State.mode !== 'kmz') return;
@@ -1569,7 +1676,9 @@ window.addEventListener('drop', async e => {
   if (files.length) kmzUpload(files);
 });
 
-/* GPON uploads */
+/* ==========================================================================
+   СОБЫТИЯ — GPON
+   ========================================================================== */
 $('fileGeo').onchange = async e => {
   const files = [...(e.target.files||[])];
   if (!files.length) return;
@@ -1585,10 +1694,14 @@ $('fileGeo').onchange = async e => {
   G.geo = out;
   G.geoFiles = files.map(f => f.name);
   $('fileGeoBtn').classList.add('active');
+  $('fileGeoBtn').childNodes[0].nodeValue = `📂 Excel × ${files.length} `;
   const lines = results.map(r => r.ok ? `  ✓ ${r.name}: ${r.added}` : `  ✗ ${r.name}: ${r.error}`);
   const total = results.reduce((s,r) => s + (r.ok ? r.added : 0), 0);
   $('diag').textContent = `Excel: ${files.length} файл., адресов: ${total}\n` + lines.join('\n');
-  if (G.onus.length) gponReindex();
+
+  if (G.onus.length) await gponReindex();
+
+  await gponSaveState();
   e.target.value = '';
 };
 
@@ -1599,16 +1712,19 @@ $('fileVg').onchange = async e => {
     const r = gponParseVgroups(text);
     G.vgFile = f.name;
     $('fileVgBtn').classList.add('active');
+    $('fileVgBtn').childNodes[0].nodeValue = `📂 ${f.name} `;
     $('diag').textContent = `${f.name}: ${r.total} ONU, на карте ${r.matched}, без координат ${r.unmatched}`;
     gponBuildStatusFilter();
     gponBuildBranchFilter();
     gponBuildLayers();
     gponUpdateStats();
+
+    await gponSaveState();
   } catch(err){ alert('CSV: ' + err.message); }
   e.target.value = '';
 };
 
-function gponReindex(){
+async function gponReindex(){
   let m = 0, u = 0;
   for (const o of G.onus){
     const g = G.geo.get(gponNormAddr(o.address));
@@ -1621,6 +1737,8 @@ function gponReindex(){
   gponBuildLayers();
   gponUpdateStats();
   $('diag').textContent = `geo: ${G.geo.size} адресов · ONU: ${G.onus.length} · на карте ${m} · без координат ${u}`;
+
+  await gponSaveState();
 }
 
 $('reset-filters').onclick = () => {
@@ -1635,6 +1753,9 @@ $('reset-filters').onclick = () => {
   gponApplyFilters();
 };
 
+/* ==========================================================================
+   ПОИСК / ТЕМА / INIT
+   ========================================================================== */
 $('search').addEventListener('input', debounce(() => {
   const q = $('search').value.trim().toLowerCase();
   if (State.mode === 'kmz'){
@@ -1654,12 +1775,10 @@ applyTheme(localStorage.getItem('viewer-theme') || 'dark');
 $('theme').onclick = () =>
   applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
 
-/* ==========================================================================
-   INIT
-   ========================================================================== */
 (async function init(){
   await kmzLoadRoutes();
   await kmzLoadFolders();
+  await gponLoadState();
   setMode('kmz');
   $('s-found').textContent = '—';
 })();
