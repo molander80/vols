@@ -112,7 +112,6 @@ button,input,select{font:inherit;color:inherit}
 .filter-item input{accent-color:var(--accent)}
 .filter-item .cnt{margin-left:auto;color:var(--muted);font-size:11.5px}
 
-/* Подсветка ветки при клике по маркеру ONU на карте */
 .filter-item.branch-highlight{
   background: rgba(56,189,248,.28);
   outline: 1px solid var(--accent);
@@ -301,6 +300,7 @@ const State = {
     hiddenBranches: new Set(),
     mergeMarked: new Set(),
     isolation: null,
+    isolationPrev: null,   // { [routeId]: true } — что было visible до изоляции
     customFolders: new Set(),
     dragPayload: null,
     search: '',
@@ -573,34 +573,88 @@ function kmzHighlightRoutes(ids){
 }
 
 /* ==========================================================================
-   KMZ — изоляция
+   KMZ — изоляция (с изменением visible и обновлением галочек)
    ========================================================================== */
+function kmzRestoreIsolation(){
+  // Восстанавливает visible из K.isolationPrev и синхронизирует дерево.
+  const prev = K.isolationPrev || {};
+  const toShow = [];
+  for (const rr of K.routes){
+    const wasVisible = !!prev[rr.id];
+    if (rr.visible !== wasVisible){
+      rr.visible = wasVisible;
+    }
+    if (wasVisible) toShow.push(rr.id);
+  }
+  K.isolation = null;
+  K.isolationPrev = null;
+
+  kmzApplyFilters();
+  kmzUpdateBadge();
+  kmzUpdateAllTreeCheckboxes();
+
+  if (toShow.length){
+    patchRoutesBulk(toShow, { visible: true });
+  }
+}
+
 function kmzIsolate(r){
   const type = r.branch ? 'branch' : 'route';
   const key = r.branch || '__none__';
   const isolKey = type === 'branch' ? key : r.id;
 
+  // Повторный клик — снять изоляцию и вернуть галочки к прежнему состоянию
   const same = K.isolation && K.isolation.type === type && K.isolation.key === isolKey;
   if (same){
-    K.isolation = null;
-    kmzApplyFilters();
-    kmzUpdateBadge();
+    kmzRestoreIsolation();
     return;
   }
 
+  // Если уже что-то изолировано — сначала вернём прежнее состояние.
+  if (K.isolation){
+    kmzRestoreIsolation();
+  }
+
+  // Запоминаем текущее состояние visible — чтобы вернуть при снятии изоляции
+  K.isolationPrev = {};
+  for (const rr of K.routes){
+    K.isolationPrev[rr.id] = !!rr.visible;
+  }
+
   K.isolation = { type, key: isolKey };
-  kmzApplyFilters();
-  kmzUpdateBadge();
 
-  kmzExpandPathTo(r.folder || '', null);
-
-  const idsToHighlight = type === 'branch'
+  // Кого оставляем видимым, кого скрываем
+  const idsToShow = type === 'branch'
     ? K.routes.filter(x => (x.branch || '__none__') === key).map(x => x.id)
     : [r.id];
-  kmzHighlightRoutes(idsToHighlight);
+  const showSet = new Set(idsToShow);
 
+  const toHide = [];
+  const toShowNow = [];
+  for (const rr of K.routes){
+    const wantVisible = showSet.has(rr.id);
+    if (rr.visible !== wantVisible){
+      rr.visible = wantVisible;
+    }
+    if (wantVisible) toShowNow.push(rr.id);
+    else toHide.push(rr.id);
+  }
+
+  kmzApplyFilters();
+  kmzUpdateBadge();
+  kmzUpdateAllTreeCheckboxes();
+
+  // Сохраняем на сервере батчами: сначала скрыть, потом явно показать.
+  if (toHide.length)    patchRoutesBulk(toHide,    { visible: false });
+  if (toShowNow.length) patchRoutesBulk(toShowNow, { visible: true });
+
+  // Развернуть дерево до нужной ветки и подсветить
+  kmzExpandPathTo(r.folder || '', null);
+  kmzHighlightRoutes(idsToShow);
+
+  // Подогнать карту под активные маршруты
   const pts = [];
-  for (const id of idsToHighlight){
+  for (const id of idsToShow){
     const rr = K.routes.find(x => x.id === id);
     if (!rr) continue;
     for (const p of rr.points) pts.push([p[0], p[1]]);
@@ -624,20 +678,15 @@ function kmzUpdateBadge(){
 }
 
 $('isoBadgeClear').onclick = () => {
-  K.isolation = null;
-  kmzApplyFilters();
-  kmzUpdateBadge();
+  if (K.isolation) kmzRestoreIsolation();
 };
 
 map.on('click', (e) => {
   if (__curPopup){ __curPopup.closePopup(); __curPopup = null; }
   const stopped = e.originalEvent && e.originalEvent._stopped;
   if (K.isolation && !stopped){
-    K.isolation = null;
-    kmzApplyFilters();
-    kmzUpdateBadge();
+    kmzRestoreIsolation();
   }
-  // Снять подсветку ветки в дереве GPON, если клик был по пустому месту карты
   if (!stopped) gponClearBranchHighlight();
 });
 
@@ -719,11 +768,23 @@ function kmzRenderNode(node, container, parts, isRoot){
     cb.indeterminate = visible > 0 && visible < total;
     cb.disabled = total === 0;
     cb.title = `${visible} из ${total} видимо`;
-    cb.addEventListener('click', e => e.stopPropagation());
-    cb.addEventListener('change', e => {
+
+    // Пока курсор на чекбоксе папки — отключаем draggable у строки,
+    // чтобы клик не превращался в drag-операцию.
+    cb.addEventListener('mousedown', e => {
       e.stopPropagation();
-      const allOn = cb.checked && !cb.indeterminate;
-      kmzSetFolderVisible(node, !allOn);
+      row.draggable = false;
+    });
+    cb.addEventListener('mouseup', e => {
+      e.stopPropagation();
+      row.draggable = true;
+    });
+    cb.addEventListener('pointerdown', e => e.stopPropagation());
+    cb.addEventListener('click', e => {
+      e.stopPropagation();
+      const want = cb.checked;
+      cb.indeterminate = false;
+      kmzSetFolderVisible(node, want);
     });
 
     const nameSpan = document.createElement('span');
@@ -739,13 +800,9 @@ function kmzRenderNode(node, container, parts, isRoot){
     const actions = document.createElement('span');
     actions.className = 'folder-actions';
     actions.innerHTML = `
-      <button data-act="show-all" title="Показать всё">☑</button>
-      <button data-act="hide-all" title="Скрыть всё">☐</button>
       <button data-act="rename-folder" title="Переименовать">✏️</button>
       <button data-act="new-subfolder" title="Подпапка">📁+</button>
       <button data-act="delete-folder" title="Удалить">🗑</button>`;
-    actions.querySelector('[data-act="show-all"]').onclick = e => { e.stopPropagation(); kmzSetFolderVisible(node, true); };
-    actions.querySelector('[data-act="hide-all"]').onclick = e => { e.stopPropagation(); kmzSetFolderVisible(node, false); };
     actions.querySelector('[data-act="rename-folder"]').onclick = e => { e.stopPropagation(); kmzRenameFolder(pathStr); };
     actions.querySelector('[data-act="new-subfolder"]').onclick = e => {
       e.stopPropagation();
@@ -771,6 +828,67 @@ function kmzRenderNode(node, container, parts, isRoot){
   for (const r of node.routes) container.appendChild(kmzBuildRouteRow(r));
 }
 
+/* Точечно обновить счётчики и чекбоксы папок без полной перерисовки дерева */
+function kmzUpdateFolderCounts(){
+  const tree = $('folderTree');
+  if (!tree) return;
+
+  const folders = [...tree.querySelectorAll('.folder-row')].reverse();
+  for (const row of folders){
+    const children = row.nextElementSibling;
+    if (!children || !children.classList.contains('folder-children')) continue;
+
+    const routes = [];
+    const collectFrom = (container) => {
+      for (const child of container.children){
+        if (child.classList.contains('route-row')){
+          const rid = parseInt(child.dataset.id, 10);
+          const r = K.routes.find(x => x.id === rid);
+          if (r) routes.push(r);
+        } else if (child.classList.contains('folder-children')){
+          collectFrom(child);
+        }
+      }
+    };
+    collectFrom(children);
+
+    const total = routes.length;
+    let visible = 0;
+    for (const r of routes){
+      const hb = r.branch && K.hiddenBranches.has(r.branch);
+      if (r.visible && !hb) visible++;
+    }
+
+    const cnt = row.querySelector('.folder-count');
+    if (cnt) cnt.textContent = total ? `${visible}/${total}` : '';
+
+    const fcb = row.querySelector('.folder-cb');
+    if (fcb){
+      fcb.checked = total > 0 && visible === total;
+      fcb.indeterminate = visible > 0 && visible < total;
+      fcb.title = `${visible} из ${total} видимо`;
+    }
+  }
+}
+
+/* Обновляет галочки ВСЕХ маршрутов в дереве по их r.visible */
+function kmzUpdateAllTreeCheckboxes(){
+  const tree = $('folderTree');
+  if (!tree) return;
+
+  for (const row of tree.querySelectorAll('.route-row')){
+    const rid = parseInt(row.dataset.id, 10);
+    const rr = K.routes.find(x => x.id === rid);
+    if (!rr) continue;
+    const cb = row.querySelector('input[type="checkbox"]');
+    if (cb && cb.checked !== rr.visible){
+      cb.checked = rr.visible;
+    }
+  }
+
+  kmzUpdateFolderCounts();
+}
+
 function kmzBuildRouteRow(r){
   const li = document.createElement('div');
   li.className = 'route-row';
@@ -791,12 +909,27 @@ function kmzBuildRouteRow(r){
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = r.visible;
+
+  // Пока курсор на чекбоксе — отключаем draggable у строки,
+  // чтобы клик не превращался в drag-операцию.
+  cb.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    li.draggable = false;
+  });
+  cb.addEventListener('mouseup', e => {
+    e.stopPropagation();
+    li.draggable = true;
+  });
+  cb.addEventListener('click', e => e.stopPropagation());
+  cb.addEventListener('pointerdown', e => e.stopPropagation());
+
   cb.onchange = async () => {
     r.visible = cb.checked;
-    await patchRoute(r.id, { visible: r.visible });
     kmzApplyFilters();
-    kmzRenderTree();
+    kmzUpdateFolderCounts();
+    await patchRoute(r.id, { visible: r.visible });
   };
+
   li.appendChild(cb);
 
   const nameSpan = document.createElement('span');
@@ -1280,7 +1413,6 @@ function gponBindPopup(layer){
     __curPopup = this;
     this.openPopup();
   });
-  // Клик по маркеру: подсветить только эту ветку в дереве, снять со всех остальных.
   layer.on('click', function(e){
     L.DomEvent.stopPropagation(e);
     gponHighlightBranchInTree(layer.__onu.branch);
@@ -1389,11 +1521,9 @@ function gponHighlightBranchInTree(branch){
   const root = $('filter-branch-list');
   if (!root) return;
 
-  // Снять со всех — оставить только одну.
   gponClearBranchHighlight();
   if (!branch) return;
 
-  // Найти нужный filter-item по value чекбокса.
   const all = root.querySelectorAll('.filter-item');
   let target = null;
   for (const el of all){
@@ -1404,7 +1534,6 @@ function gponHighlightBranchInTree(branch){
 
   target.classList.add('branch-highlight');
 
-  // Раскрыть все родительские свёрнутые группы, чтобы ветка была видна.
   let p = target.parentElement;
   while (p && p !== root){
     if (p.classList.contains('collapsed')){
@@ -1655,7 +1784,6 @@ function gponFilterChange(e){
   const t = e.target;
   if (!(t instanceof HTMLInputElement)) return;
 
-  // Пользователь сам взаимодействует с деревом — снимаем подсветку с карты
   gponClearBranchHighlight();
 
   if (t.matches('input[data-filter="branch"]')){
