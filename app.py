@@ -1,50 +1,45 @@
 import io
 import os
 import json
-import csv
+import atexit
 import threading
 import zipfile
 import xml.etree.ElementTree as ET
 from flask import Flask, request, jsonify, render_template, send_file
 import simplekml
 
-try:
-    from openpyxl import load_workbook
-except ImportError:
-    load_workbook = None
-
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(__file__)
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
-STATE_FILE = os.path.join(DATA_DIR, 'state.json')
+STATE_FILE = os.path.join(DATA_DIR, 'state.json')       # маршруты + папки
+GPON_FILE  = os.path.join(DATA_DIR, 'gpon_state.json')  # geo + onus + имена файлов
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ============================ STATE ============================
+# ============================ STATE (KMZ) ============================
 ROUTES = {}
 _next_id = 1
-_state_lock = threading.RLock()          # RLock: позволяет вложенный захват
+_state_lock = threading.RLock()
 PERSIST = {'customFolders': set()}
 
-# GPON-состояние: geo-словарь, список ONU и имена загруженных файлов.
-# Живёт в памяти и персистится в data/state.json рядом с KMZ.
-GPON = {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}
+# Ленивая запись state.json:
+#   - _state_dirty — флаг «есть несохранённые изменения»
+#   - _state_timer — отложенный таймер на запись через _STATE_DEBOUNCE_SEC
+#   - _save_state_now() — синхронная запись (вызывается из таймера и atexit)
+#   - _save_state()     — пометить грязным + запустить таймер, если не запущен
+_state_dirty = False
+_state_timer = None
+_STATE_DEBOUNCE_SEC = 0.8
 
 
-def _save_state():
-    # ВНИМАНИЕ: _save_state() сама захватывает _state_lock (RLock → реентерабельно).
+def _save_state_now():
+    """Синхронная атомарная запись state.json."""
     with _state_lock:
         payload = {
             'next_id': _next_id,
             'customFolders': sorted(PERSIST['customFolders']),
             'routes': list(ROUTES.values()),
-            'gpon': {
-                'geo': dict(GPON['geo']),
-                'onus': list(GPON['onus']),
-                'geoFiles': list(GPON.get('geoFiles', [])),
-                'vgFile': GPON.get('vgFile'),
-            },
         }
         tmp = STATE_FILE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
@@ -52,15 +47,56 @@ def _save_state():
         os.replace(tmp, STATE_FILE)
 
 
+def _save_state_flush():
+    """Сбрасывает флаг и вызывает _save_state_now()."""
+    global _state_dirty, _state_timer
+    with _state_lock:
+        if not _state_dirty:
+            _state_timer = None
+            return
+        _state_dirty = False
+    try:
+        _save_state_now()
+    finally:
+        with _state_lock:
+            _state_timer = None
+
+
+def _save_state():
+    """
+    Ленивая запись: помечаем состояние грязным и, если таймер ещё не запущен,
+    запускаем отложенную запись через _STATE_DEBOUNCE_SEC.
+    Несколько вызовов подряд приведут к одной записи на диск.
+    """
+    global _state_dirty, _state_timer
+    with _state_lock:
+        _state_dirty = True
+        if _state_timer is not None:
+            return
+        _state_timer = threading.Timer(_STATE_DEBOUNCE_SEC, _save_state_flush)
+        _state_timer.daemon = True
+        _state_timer.start()
+
+
+def _flush_state_on_exit():
+    """atexit: гарантированно сбросить несохранённые изменения при выходе."""
+    global _state_dirty
+    with _state_lock:
+        if not _state_dirty:
+            return
+        _state_dirty = False
+    try:
+        _save_state_now()
+    except Exception as e:
+        print('state flush on exit failed:', e)
+
+
+atexit.register(_flush_state_on_exit)
+
+
 def _load_state():
+    """Восстанавливает только KMZ-часть из state.json."""
     global _next_id
-
-    # Сброс GPON в дефолт — на случай, если файла нет или он битый.
-    GPON['geo'] = {}
-    GPON['onus'] = []
-    GPON['geoFiles'] = []
-    GPON['vgFile'] = None
-
     if not os.path.exists(STATE_FILE):
         return
     try:
@@ -84,20 +120,108 @@ def _load_state():
             'visible': bool(r.get('visible', True)),
             'points': r.get('points', []),
         }
-
     PERSIST['customFolders'] = set(payload.get('customFolders', []))
     _next_id = int(payload.get('next_id', (max(ROUTES) + 1) if ROUTES else 1))
-
-    # Восстанавливаем GPON (если секция есть).
-    gpon = payload.get('gpon') or {}
-    GPON['geo'] = gpon.get('geo') or {}
-    GPON['onus'] = gpon.get('onus') or []
-    GPON['geoFiles'] = gpon.get('geoFiles') or []
-    GPON['vgFile'] = gpon.get('vgFile')
 
 
 def _touch_routes():
     _save_state()
+
+
+# ============================ STATE (GPON) ============================
+# GPON-состояние живёт в памяти и персистится в data/gpon_state.json.
+# Оно полностью независимо от state.json: правки маршрутов не трогают
+# GPON, правки GPON не перезаписывают маршруты.
+GPON = {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}
+
+_gpon_lock = threading.RLock()
+_gpon_dirty = False
+_gpon_timer = None
+_GPON_DEBOUNCE_SEC = 0.8
+
+
+def _save_gpon_now():
+    """Синхронно пишет gpon_state.json (атомарно, через tmp + os.replace)."""
+    with _gpon_lock:
+        payload = {
+            'geo': GPON['geo'],
+            'onus': GPON['onus'],
+            'geoFiles': GPON['geoFiles'],
+            'vgFile': GPON['vgFile'],
+        }
+        tmp = GPON_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, GPON_FILE)
+
+
+def _save_gpon_flush():
+    """Сбрасывает флаг и вызывает _save_gpon_now()."""
+    global _gpon_dirty, _gpon_timer
+    with _gpon_lock:
+        if not _gpon_dirty:
+            _gpon_timer = None
+            return
+        _gpon_dirty = False
+    try:
+        _save_gpon_now()
+    finally:
+        with _gpon_lock:
+            _gpon_timer = None
+
+
+def _save_gpon():
+    """
+    Ленивая запись: помечаем состояние грязным и, если таймер ещё не запущен,
+    запускаем отложенную запись через _GPON_DEBOUNCE_SEC.
+    Несколько вызовов подряд приведут к одной записи на диск.
+    """
+    global _gpon_dirty, _gpon_timer
+    with _gpon_lock:
+        _gpon_dirty = True
+        if _gpon_timer is not None:
+            return
+        _gpon_timer = threading.Timer(_GPON_DEBOUNCE_SEC, _save_gpon_flush)
+        _gpon_timer.daemon = True
+        _gpon_timer.start()
+
+
+def _flush_gpon_on_exit():
+    """atexit: гарантированно сбросить несохранённые GPON-изменения."""
+    global _gpon_dirty
+    with _gpon_lock:
+        if not _gpon_dirty:
+            return
+        _gpon_dirty = False
+    try:
+        _save_gpon_now()
+    except Exception as e:
+        print('gpon flush on exit failed:', e)
+
+
+atexit.register(_flush_gpon_on_exit)
+
+
+def _load_gpon():
+    """Восстанавливает GPON из gpon_state.json (если файл есть)."""
+    GPON['geo'] = {}
+    GPON['onus'] = []
+    GPON['geoFiles'] = []
+    GPON['vgFile'] = None
+
+    if not os.path.exists(GPON_FILE):
+        return
+    try:
+        with open(GPON_FILE, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print('gpon state load error:', e)
+        return
+
+    GPON['geo'] = payload.get('geo') or {}
+    GPON['onus'] = payload.get('onus') or []
+    GPON['geoFiles'] = payload.get('geoFiles') or []
+    GPON['vgFile'] = payload.get('vgFile')
 
 
 # ============================ KML PARSER ============================
@@ -221,6 +345,65 @@ def patch_route(rid):
     return jsonify(ROUTES[rid])
 
 
+@app.route('/routes/bulk', methods=['PATCH'])
+def patch_routes_bulk():
+    """
+    Массовое обновление маршрутов одним запросом.
+    Тело: { "ids": [1,2,3], "patch": { "visible": true, "folder": "A/B" } }
+    Делает одну запись state.json вместо N.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    ids = data.get('ids', [])
+    patch = data.get('patch', {})
+
+    if not isinstance(ids, list) or not isinstance(patch, dict):
+        return jsonify({'error': 'bad payload'}), 400
+
+    allowed = {'name', 'branch', 'folder', 'visible'}
+    patch = {k: v for k, v in patch.items() if k in allowed}
+    if not patch:
+        return jsonify({'error': 'no valid keys'}), 400
+
+    applied = 0
+    updated = []
+    for rid in ids:
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        r = ROUTES.get(rid)
+        if not r:
+            continue
+        for k, v in patch.items():
+            r[k] = v
+        applied += 1
+        updated.append(rid)
+
+    if applied:
+        _save_state()   # ленивая запись: одна на серию быстрых запросов
+    return jsonify({'ok': True, 'applied': applied, 'ids': updated})
+
+
+@app.route('/routes/bulk', methods=['DELETE'])
+def delete_routes_bulk():
+    """Массовое удаление маршрутов. Тело: { "ids": [1,2,3] }."""
+    data = request.get_json(force=True, silent=True) or {}
+    ids = data.get('ids', [])
+    if not isinstance(ids, list):
+        return jsonify({'error': 'bad payload'}), 400
+    removed = 0
+    for rid in ids:
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if ROUTES.pop(rid, None) is not None:
+            removed += 1
+    if removed:
+        _save_state()
+    return jsonify({'ok': True, 'removed': removed})
+
+
 @app.route('/route/<int:rid>', methods=['DELETE'])
 def delete_route(rid):
     if ROUTES.pop(rid, None) is not None:
@@ -329,18 +512,19 @@ def folders_rename():
     return jsonify({'ok': True, 'folders': sorted(PERSIST['customFolders'])})
 
 
-# ============================ STATE EXPORT / IMPORT ============================
+# ============================ STATE EXPORT / IMPORT (KMZ) ============================
 @app.route('/state/export', methods=['GET'])
 def state_export():
+    """Отдаёт state.json (только KMZ). GPON теперь в /gpon/state/export."""
     if not os.path.exists(STATE_FILE):
-        return jsonify({'routes': [], 'customFolders': [], 'next_id': 1,
-                        'gpon': {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}})
+        return jsonify({'routes': [], 'customFolders': [], 'next_id': 1})
     return send_file(STATE_FILE, mimetype='application/json',
                      as_attachment=True, download_name='state.json')
 
 
 @app.route('/state/import', methods=['POST'])
 def state_import():
+    """Импорт state.json (только KMZ). GPON сюда не входит — см. /gpon/state/import."""
     global _next_id
     f = request.files.get('file')
     if not f:
@@ -357,160 +541,25 @@ def state_import():
     _load_state()
     return jsonify({'ok': True,
                     'routes': len(ROUTES),
-                    'folders': len(PERSIST['customFolders']),
-                    'geo': len(GPON['geo']),
-                    'onus': len(GPON['onus'])})
-
-
-# ============================ GPON (server-side) ============================
-# Само состояние GPON объявлено выше (см. блок STATE), чтобы _save_state()
-# и _load_state() могли его сериализовать/восстанавливать.
-
-def _norm_addr(s: str) -> str:
-    if not s:
-        return ''
-    s = str(s).lower().replace('ё', 'е')
-    for a, b in [('«', ''), ('»', ''), ('"', ''), ("'", ''), ('`', '')]:
-        s = s.replace(a, b)
-    while '  ' in s:
-        s = s.replace('  ', ' ')
-    return s.strip()
-
-
-def _branch_from_login(login: str) -> str:
-    if not login:
-        return 'Прочее'
-    head = login.split(':')[0]
-    parts = head.split('/')
-    if len(parts) < 5:
-        return head
-    return f'{parts[0]}/{parts[3]}/{parts[4]}'
-
-
-@app.route('/gpon/geo', methods=['POST'])
-def gpon_geo():
-    if load_workbook is None:
-        return jsonify({'error': 'openpyxl not installed'}), 500
-    files = request.files.getlist('files[]')
-    out = {}
-    names = []
-    for f in files:
-        names.append(f.filename or '')
-        try:
-            wb = load_workbook(io.BytesIO(f.read()), read_only=True, data_only=True)
-            ws = wb[wb.sheetnames[0]]
-            rows = list(ws.iter_rows(values_only=True))
-            h = -1
-            for i, r in enumerate(rows[:30]):
-                if r and any(str(c).strip() == 'Широта' for c in r if c is not None):
-                    h = i
-                    break
-            if h < 0:
-                continue
-            header = [str(c).strip() if c is not None else '' for c in rows[h]]
-            cLat = header.index('Широта') if 'Широта' in header else -1
-            cLng = header.index('Долгота') if 'Долгота' in header else -1
-            cAddr = header.index('Описание') if 'Описание' in header else -1
-            if cLat < 0 or cLng < 0 or cAddr < 0:
-                continue
-            for r in rows[h + 1:]:
-                if not r:
-                    continue
-                try:
-                    lat = float(str(r[cLat]).replace(',', '.'))
-                    lng = float(str(r[cLng]).replace(',', '.'))
-                except (TypeError, ValueError):
-                    continue
-                addr = r[cAddr]
-                if not addr:
-                    continue
-                out[_norm_addr(addr)] = {'lat': lat, 'lng': lng, 'address': str(addr)}
-        except Exception as e:
-            print('geo parse error', f.filename, e)
-    GPON['geo'] = out
-    GPON['geoFiles'] = names
-    _save_state()
-    return jsonify({'count': len(out), 'files': names})
-
-
-@app.route('/gpon/vgroups', methods=['POST'])
-def gpon_vgroups():
-    f = request.files.get('file')
-    if not f:
-        return jsonify({'error': 'no file'}), 400
-    raw = f.read()
-    text = None
-    for enc in ('utf-8-sig', 'utf-8', 'cp1251'):
-        try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        return jsonify({'error': 'encoding'}), 400
-
-    first = text.split('\n', 1)[0]
-    delim = max([';', '\t', ','], key=lambda d: first.count(d))
-    reader = csv.reader(io.StringIO(text), delimiter=delim)
-    rows = list(reader)
-    if not rows:
-        return jsonify({'error': 'empty'}), 400
-
-    header = [h.strip() for h in rows[0]]
-    i_login = header.index('Логин') if 'Логин' in header else 1
-    i_id = header.index('ID') if 'ID' in header else 0
-    i_addr = header.index('Адрес') if 'Адрес' in header else 8
-    i_stat = next((i for i, h in enumerate(header) if h.startswith('Блокировка')), -1)
-
-    onus = []
-    matched = 0
-    for r in rows[1:]:
-        if not r:
-            continue
-        try:
-            login = r[i_login].strip()
-            addr = r[i_addr].strip()
-        except IndexError:
-            continue
-        if not login or not addr or login == 'null' or addr == 'null':
-            continue
-        g = GPON['geo'].get(_norm_addr(addr))
-        status = r[i_stat].strip() if i_stat >= 0 and i_stat < len(r) else ''
-        o = {
-            'id': r[i_id].strip() if i_id < len(r) else '',
-            'login': login,
-            'address': addr,
-            'status': status,
-            'branch': _branch_from_login(login),
-            'lat': g['lat'] if g else None,
-            'lng': g['lng'] if g else None,
-        }
-        if g:
-            matched += 1
-        onus.append(o)
-    GPON['onus'] = onus
-    GPON['vgFile'] = f.filename
-    _save_state()
-    return jsonify({'total': len(onus), 'matched': matched,
-                    'unmatched': len(onus) - matched})
+                    'folders': len(PERSIST['customFolders'])})
 
 
 # ============================ GPON STATE ============================
 @app.route('/gpon/state', methods=['GET'])
 def gpon_state_get():
-    with _state_lock:
+    with _gpon_lock:
         return jsonify({
             'geo': GPON['geo'],
             'onus': GPON['onus'],
-            'geoFiles': GPON.get('geoFiles', []),
-            'vgFile': GPON.get('vgFile'),
+            'geoFiles': GPON['geoFiles'],
+            'vgFile': GPON['vgFile'],
         })
 
 
 @app.route('/gpon/state', methods=['POST'])
 def gpon_state_post():
     data = request.get_json(force=True, silent=True) or {}
-    with _state_lock:
+    with _gpon_lock:
         if 'geo' in data and isinstance(data['geo'], dict):
             GPON['geo'] = data['geo']
         if 'onus' in data and isinstance(data['onus'], list):
@@ -519,7 +568,7 @@ def gpon_state_post():
             GPON['geoFiles'] = list(data.get('geoFiles') or [])
         if 'vgFile' in data:
             GPON['vgFile'] = data.get('vgFile')
-    _save_state()
+    _save_gpon()   # ленивая запись: одна на серию быстрых POST-ов
     return jsonify({
         'ok': True,
         'geo': len(GPON['geo']),
@@ -529,17 +578,52 @@ def gpon_state_post():
 
 @app.route('/gpon/state', methods=['DELETE'])
 def gpon_state_delete():
-    with _state_lock:
+    with _gpon_lock:
         GPON['geo'] = {}
         GPON['onus'] = []
         GPON['geoFiles'] = []
         GPON['vgFile'] = None
-    _save_state()
+    _save_gpon()
     return jsonify({'ok': True})
+
+
+@app.route('/gpon/state/export', methods=['GET'])
+def gpon_state_export():
+    """Скачать gpon_state.json отдельно от state.json."""
+    if not os.path.exists(GPON_FILE):
+        return jsonify({'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None})
+    return send_file(GPON_FILE, mimetype='application/json',
+                     as_attachment=True, download_name='gpon_state.json')
+
+
+@app.route('/gpon/state/import', methods=['POST'])
+def gpon_state_import():
+    """Импорт gpon_state.json (geo + onus). Не трогает state.json."""
+    f = request.files.get('file')
+    if not f:
+        return jsonify({'error': 'no file'}), 400
+    try:
+        payload = json.loads(f.read().decode('utf-8'))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+    with _gpon_lock:
+        tmp = GPON_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as out:
+            json.dump(payload, out, ensure_ascii=False)
+        os.replace(tmp, GPON_FILE)
+
+    _load_gpon()
+    return jsonify({'ok': True,
+                    'geo': len(GPON['geo']),
+                    'onus': len(GPON['onus']),
+                    'geoFiles': GPON['geoFiles'],
+                    'vgFile': GPON['vgFile']})
 
 
 # ============================ BOOT ============================
 _load_state()
+_load_gpon()
 
 if __name__ == '__main__':
     app.run(debug=True, host='127.0.0.1', port=5000)

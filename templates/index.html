@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>KMZ + GPON Viewer</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
@@ -72,7 +73,6 @@ button,input,select{font:inherit;color:inherit}
   color:var(--muted);margin:14px 0 6px;font-weight:600;}
 .side-title:first-child{margin-top:0}
 
-/* ---------- KMZ tree ---------- */
 .folder-row{display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:4px;
   font-size:13px;user-select:none;cursor:pointer}
 .folder-row:hover{background:var(--panel)}
@@ -104,7 +104,6 @@ button,input,select{font:inherit;color:inherit}
   transition: background .15s ease, outline-color .15s ease;
 }
 
-/* ---------- GPON filter tree ---------- */
 .filter-item{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;
   cursor:pointer;user-select:none;font-size:12.5px}
 .filter-item:hover{background:var(--panel)}
@@ -245,12 +244,23 @@ const $ = id => document.getElementById(id);
 const esc = s => (s||'').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
 function patchRoute(id, patch){
   return fetch(`/route/${id}`, {
     method:'PATCH', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(patch),
   }).catch(err => console.error('PATCH failed', id, err));
 }
+
+function patchRoutesBulk(ids, patch){
+  if (!ids || !ids.length) return Promise.resolve();
+  return fetch('/routes/bulk', {
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ ids, patch }),
+  }).catch(err => console.warn('bulk patch failed', err));
+}
+
 const stripBOM = s => s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
 
 /* ==========================================================================
@@ -347,6 +357,7 @@ function kmzStringToColor(str){
   let h = 0; for (let i=0;i<str.length;i++) h = (h*31 + str.charCodeAt(i)) | 0;
   return `hsl(${Math.abs(h)%360}, 70%, 45%)`;
 }
+
 function kmzSimplify(points, minDist=3){
   if (points.length < 3) return points;
   const out = [points[0]];
@@ -364,8 +375,19 @@ function kmzSimplify(points, minDist=3){
   return out;
 }
 
+const _simplifiedCache = new WeakMap();
+
+function kmzGetSimplifiedPoints(r){
+  let pts = _simplifiedCache.get(r);
+  if (!pts){
+    pts = kmzSimplify(r.points.map(p => [p[0], p[1]]));
+    _simplifiedCache.set(r, pts);
+  }
+  return pts;
+}
+
 function kmzBuildLayer(r){
-  const pts = kmzSimplify(r.points.map(p => [p[0], p[1]]));
+  const pts = kmzGetSimplifiedPoints(r);
   const color = kmzStringToColor(r.branch || r.name);
 
   const halo = L.polyline(pts, {
@@ -396,6 +418,25 @@ function kmzRebuildLayers(){
   }
   kmzApplyFilters();
   kmzFitAll();
+}
+
+function kmzRemoveLayer(rid){
+  const layer = K.layers.get(rid);
+  if (!layer) return;
+  if (map.hasLayer(layer)) map.removeLayer(layer);
+  K.layers.delete(rid);
+}
+
+function kmzAddLayersFor(routes){
+  let added = 0;
+  for (const r of routes){
+    if (K.layers.has(r.id)) continue;
+    const layer = kmzBuildLayer(r);
+    K.layers.set(r.id, layer);
+    if (r.visible) layer.addTo(map);
+    added++;
+  }
+  return added;
 }
 
 function kmzFitAll(){
@@ -773,9 +814,7 @@ function kmzBuildRouteRow(r){
     if (!confirm(`Удалить "${r.name}"?`)) return;
     await fetch(`/route/${r.id}`, { method:'DELETE' });
     K.routes = K.routes.filter(x => x.id !== r.id);
-    const l = K.layers.get(r.id);
-    if (l) map.removeLayer(l);
-    K.layers.delete(r.id);
+    kmzRemoveLayer(r.id);
     kmzRenderTree();
     $('s-routes').textContent = K.routes.length;
   };
@@ -815,7 +854,7 @@ async function kmzMoveRoutes(ids, folder){
   }
   K.customFolders.delete(folder);
   kmzRenderTree();
-  await Promise.all(affected.map(r => patchRoute(r.id, { folder })));
+  await patchRoutesBulk(affected.map(r => r.id), { folder });
 
   for (const old of oldFolders){
     const still = K.routes.some(r => r.folder === old || (r.folder||'').startsWith(old + '/'));
@@ -844,10 +883,8 @@ async function kmzMoveFolder(src, dst){
   K.customFolders = upd;
 
   kmzRenderTree();
-  await Promise.all([
-    ...affected.map(r => patchRoute(r.id, { folder:r.folder })),
-    customOnly ? kmzFolderRename(src, np) : Promise.resolve(),
-  ]);
+  await Promise.all(affected.map(r => patchRoute(r.id, { folder: r.folder })));
+  if (customOnly) await kmzFolderRename(src, np);
 }
 
 async function kmzRenameFolder(oldPath){
@@ -869,10 +906,8 @@ async function kmzRenameFolder(oldPath){
   K.customFolders = upd;
 
   kmzRenderTree();
-  await Promise.all([
-    ...affected.map(r => patchRoute(r.id, { folder:r.folder })),
-    kmzFolderRename(oldPath, np),
-  ]);
+  await Promise.all(affected.map(r => patchRoute(r.id, { folder: r.folder })));
+  await kmzFolderRename(oldPath, np);
 }
 
 async function kmzDeleteFolder(path){
@@ -884,10 +919,8 @@ async function kmzDeleteFolder(path){
   for (const f of [...K.customFolders]) if (f.startsWith(path + '/')) K.customFolders.delete(f);
 
   kmzRenderTree();
-  await Promise.all([
-    ...affected.map(r => patchRoute(r.id, { folder:'' })),
-    kmzFolderDelete(path),
-  ]);
+  await patchRoutesBulk(affected.map(r => r.id), { folder: '' });
+  await kmzFolderDelete(path);
 }
 
 function kmzSetFolderVisible(node, visible){
@@ -902,7 +935,7 @@ function kmzSetFolderVisible(node, visible){
   }
   kmzApplyFilters();
   kmzRenderTree();
-  Promise.all(routes.map(r => patchRoute(r.id, { visible:r.visible })));
+  patchRoutesBulk(routes.map(r => r.id), { visible });
 }
 
 /* ==========================================================================
@@ -935,9 +968,31 @@ async function kmzFolderRename(oldPath, newPath){
 
 async function kmzLoadRoutes(){
   const res = await fetch('/routes');
-  K.routes = await res.json();
+  const fresh = await res.json();
+
+  const wasEmpty = K.routes.length === 0;
+  const oldIds = new Set(K.routes.map(r => r.id));
+  const newIds = new Set(fresh.map(r => r.id));
+
+  for (const id of oldIds){
+    if (!newIds.has(id)) kmzRemoveLayer(id);
+  }
+
+  const oldById = new Map(K.routes.map(r => [r.id, r]));
+  K.routes = fresh.map(r => {
+    const prev = oldById.get(r.id);
+    if (prev && prev.points === r.points) return prev;
+    return r;
+  });
+
   kmzRenderTree();
-  kmzRebuildLayers();
+
+  const brandNew = K.routes.filter(r => !oldIds.has(r.id));
+  const addedCount = kmzAddLayersFor(brandNew);
+
+  if (wasEmpty || addedCount > 0) kmzFitAll();
+  kmzApplyFilters();
+
   $('s-routes').textContent = K.routes.length;
 }
 
@@ -1039,18 +1094,48 @@ const GPON_STATUS_CLASS = { active:'stat-active', off:'stat-off', block:'stat-bl
 /* ==========================================================================
    GPON — сохранение/восстановление состояния
    ========================================================================== */
+async function gponSaveGeo(){
+  try {
+    await fetch('/gpon/geo', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        geo: Object.fromEntries(G.geo),
+        geoFiles: G.geoFiles,
+      }),
+    });
+  } catch(e){
+    console.warn('gpon geo save failed', e);
+  }
+}
+
+async function gponSaveOnus(){
+  try {
+    await fetch('/gpon/onus', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        onus: G.onus,
+        vgFile: G.vgFile,
+      }),
+    });
+  } catch(e){
+    console.warn('gpon onus save failed', e);
+  }
+}
+
+// Полное сохранение — резерв (не вызывается из UI, но пусть будет).
 async function gponSaveState(){
   try {
-    const payload = {
-      geo:  Object.fromEntries(G.geo),
-      onus: G.onus,
-      geoFiles: G.geoFiles,
-      vgFile: G.vgFile,
-    };
     await fetch('/gpon/state', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        geo:  Object.fromEntries(G.geo),
+        onus: G.onus,
+        geoFiles: G.geoFiles,
+        vgFile: G.vgFile,
+      }),
     });
   } catch(e){
     console.warn('gpon state save failed', e);
@@ -1122,6 +1207,8 @@ async function gponClearState(){
     delete G.branchLayers[k];
   }
   G.allMarkers.length = 0;
+  _markersByBranch.clear();
+  _clusterMembers.clear();
 
   G.geo = new Map();
   G.onus = [];
@@ -1156,6 +1243,15 @@ $('clear-gpon-data').onclick = gponClearState;
    GPON — маркеры и попапы
    ========================================================================== */
 const GPON_ICON_CACHE = {};
+
+// Индекс: branch → массив L.marker. Строится в gponBuildLayers,
+// используется в gponApplyFilters. Обход маркеров один раз, а не N×M.
+let _markersByBranch = new Map();
+
+// Текущий набор маркеров, реально находящихся в каждом кластере.
+// Нужен, чтобы не вызывать clearLayers+addLayers, если набор не изменился.
+let _clusterMembers = new Map();
+
 function gponGetIcon(color){
   if (GPON_ICON_CACHE[color]) return GPON_ICON_CACHE[color];
   return GPON_ICON_CACHE[color] = L.divIcon({
@@ -1189,8 +1285,13 @@ function gponBuildPopup(o){
 }
 
 function gponBuildLayers(){
-  for (const k in G.branchLayers){ map.removeLayer(G.branchLayers[k]); delete G.branchLayers[k]; }
+  for (const k in G.branchLayers){
+    map.removeLayer(G.branchLayers[k]);
+    delete G.branchLayers[k];
+  }
   G.allMarkers.length = 0;
+  _markersByBranch = new Map();
+  _clusterMembers  = new Map();
 
   G.byBranch.forEach((onus, branch) => {
     const cluster = L.markerClusterGroup({
@@ -1209,6 +1310,8 @@ function gponBuildLayers(){
     }
     cluster.addLayers(arr);
     G.branchLayers[branch] = cluster;
+    _markersByBranch.set(branch, arr);
+    _clusterMembers.set(branch, new Set(arr));
     cluster.addTo(map);
   });
 
@@ -1216,34 +1319,47 @@ function gponBuildLayers(){
 }
 
 function gponApplyFilters(){
-  const fs = G.filters.status, fb = G.filters.branch;
-  G.byBranch.forEach((onus, branch) => {
+  const fs = G.filters.status;
+  const fb = G.filters.branch;
+  const activeStatusFilter = fs.size > 0;
+  const activeBranchFilter = fb.size > 0;
+
+  // Один проход по всем маркерам — O(onus), а не O(branches × onus).
+  const wanted = new Map();
+  for (const m of G.allMarkers){
+    const o = m.__onu;
+    if (o.lat == null) continue;
+    if (activeStatusFilter && !fs.has(o._statusKey)) continue;
+    if (activeBranchFilter && !fb.has(o.branch))     continue;
+    let arr = wanted.get(o.branch);
+    if (!arr){ arr = []; wanted.set(o.branch, arr); }
+    arr.push(m);
+  }
+
+  for (const branch in G.branchLayers){
     const cluster = G.branchLayers[branch];
-    if (!cluster) return;
-    let visible = 0;
-    for (const o of onus){
-      if (o.lat == null) continue;
-      if (fs.size && !fs.has(o._statusKey)) continue;
-      if (fb.size && !fb.has(o.branch)) continue;
-      visible++;
-    }
-    const has = visible > 0;
-    const on = map.hasLayer(cluster);
+    const arr = wanted.get(branch) || [];
+    const has = arr.length > 0;
+    const on  = map.hasLayer(cluster);
+
     if (has && !on && !G.searchMode) cluster.addTo(map);
     if (!has && on) map.removeLayer(cluster);
 
-    if (has){
-      cluster.clearLayers();
-      const arr = [];
-      for (const m of G.allMarkers){
-        if (m.__onu.branch !== branch) continue;
-        if (fs.size && !fs.has(m.__onu._statusKey)) continue;
-        if (fb.size && !fb.has(m.__onu.branch)) continue;
-        arr.push(m);
+    if (!has) continue;
+
+    const cur = _clusterMembers.get(branch);
+    if (cur && cur.size === arr.length){
+      let same = true;
+      for (const m of arr){
+        if (!cur.has(m)){ same = false; break; }
       }
-      cluster.addLayers(arr);
+      if (same) continue;
     }
-  });
+
+    cluster.clearLayers();
+    cluster.addLayers(arr);
+    _clusterMembers.set(branch, new Set(arr));
+  }
 }
 
 /* ==========================================================================
@@ -1701,7 +1817,7 @@ $('fileGeo').onchange = async e => {
 
   if (G.onus.length) await gponReindex();
 
-  await gponSaveState();
+  await gponSaveGeo();
   e.target.value = '';
 };
 
@@ -1719,7 +1835,7 @@ $('fileVg').onchange = async e => {
     gponBuildLayers();
     gponUpdateStats();
 
-    await gponSaveState();
+    await gponSaveOnus();
   } catch(err){ alert('CSV: ' + err.message); }
   e.target.value = '';
 };
@@ -1738,7 +1854,8 @@ async function gponReindex(){
   gponUpdateStats();
   $('diag').textContent = `geo: ${G.geo.size} адресов · ONU: ${G.onus.length} · на карте ${m} · без координат ${u}`;
 
-  await gponSaveState();
+  await gponSaveGeo();
+  await gponSaveOnus();
 }
 
 $('reset-filters').onclick = () => {
