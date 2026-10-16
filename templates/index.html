@@ -70,6 +70,9 @@ button,input,select{font:inherit;color:inherit}
   cursor:pointer;font-size:14px;line-height:1;padding:0 2px;}
 .iso-badge button:hover{color:var(--accent)}
 
+#linkBadge{border-color:var(--switch)}
+#linkBadge button:hover{color:var(--switch)}
+
 .side-title{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;
   color:var(--muted);margin:14px 0 6px;font-weight:600;}
 .side-title:first-child{margin-top:0}
@@ -88,7 +91,7 @@ button,input,select{font:inherit;color:inherit}
 .folder-actions button{background:none;border:none;color:var(--text);cursor:pointer;
   padding:0 3px;opacity:.75;font-size:12px}
 .folder-children{margin-left:14px}
-.folder-children.collapsed{display:none}
+.folder-children.collapsed{display:none!important}
 
 .route-row{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;font-size:13px;user-select:none}
 .route-row:hover{background:var(--panel)}
@@ -105,6 +108,14 @@ button,input,select{font:inherit;color:inherit}
   outline: 1px solid var(--accent);
   transition: background .15s ease, outline-color .15s ease;
 }
+.route-row.linked{
+  background: rgba(251,191,36,.22);
+  outline: 1px solid var(--switch);
+}
+.route-row.linked .route-name{
+  color: var(--switch);
+  font-weight: 600;
+}
 
 /* ---------- GPON filter tree ---------- */
 .filter-item{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;
@@ -119,6 +130,14 @@ button,input,select{font:inherit;color:inherit}
 }
 .filter-item.branch-highlight .name{
   color: var(--accent);
+}
+
+.filter-item.branch-highlight-linked{
+  background: rgba(251,191,36,.22);
+  outline: 1px solid var(--switch);
+}
+.filter-item.branch-highlight-linked .name{
+  color: var(--switch);
 }
 
 #filter-branch-list .filter-item .name{word-break:break-all;line-height:1.25;
@@ -215,6 +234,11 @@ button,input,select{font:inherit;color:inherit}
       <button id="isoBadgeClear" title="Снять изоляцию">✕</button>
     </div>
 
+    <div class="iso-badge hidden" id="linkBadge" title="Связка KMZ ↔ GPON">
+      <span id="linkBadgeText"></span>
+      <button id="linkBadgeClear" title="Снять связку">✕</button>
+    </div>
+
     <div class="stats">
       <span class="stat" id="statKmz">📏 <b id="s-routes">0</b> маршрутов</span>
       <span class="stat hidden" id="statGpon">🏷️ <b id="s-branches">0</b> веток · 📶 <b id="s-onus">0</b> ONU · 📍 <b id="s-matched">0</b> на карте · 🔎 <b id="s-found">—</b></span>
@@ -306,6 +330,7 @@ const State = {
     customFolders: new Set(),
     dragPayload: null,
     search: '',
+    linked: null,   // { type:'route', id, key, folder }
   },
   gpon: {
     geo: new Map(),
@@ -357,6 +382,8 @@ function setMode(mode){
     $('isoBadge').classList.add('hidden');
     gponUpdateStats();
   }
+
+  kmzUpdateLinkBadge();
 }
 
 document.querySelectorAll('.mode-switch button').forEach(b => {
@@ -468,6 +495,43 @@ function kmzFitAll(){
   }
 }
 
+/**
+ * Приближает карту к связанной ветке: точки KMZ-маршрута +
+ * координаты GPON-меток, попавших под фильтр связки.
+ */
+function kmzFitToLinkedRoute(){
+  const link = K.linked;
+  if (!link) return;
+
+  const pts = [];
+
+  // 1. Точки KMZ-маршрута
+  const r = K.routes.find(x => x.id === link.id);
+  if (r && r.points && r.points.length){
+    for (const p of r.points) pts.push([p[0], p[1]]);
+  }
+
+  // 2. GPON-метки, попавшие под фильтр связки
+  const key = link.key;
+  const fs  = G.filters.status;
+  const activeStatusFilter = fs.size > 0;
+  for (const o of G.onus){
+    if (o.lat == null || o.lng == null) continue;
+    if (activeStatusFilter && !fs.has(o._statusKey)) continue;
+    if (!gponBranchMatchesKmz(o.branch, key)) continue;
+    pts.push([o.lat, o.lng]);
+  }
+
+  if (!pts.length) return;
+
+  try {
+    map.fitBounds(L.latLngBounds(pts), {
+      padding: [60, 60],
+      maxZoom: 17,
+    });
+  } catch(_){}
+}
+
 function kmzApplyFilters(){
   const q = K.search.toLowerCase();
   for (const r of K.routes){
@@ -538,6 +602,36 @@ function kmzExpandPathTo(folderPath, routeId){
   if (routeId != null) kmzHighlightRoute(routeId);
 }
 
+/** Сворачивает дерево до пути указанного маршрута, подсвечивает его. */
+function kmzCollapseExceptRoute(routeId){
+  const tree = $('folderTree');
+  if (!tree) return;
+
+  tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.add('collapsed'));
+  tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
+  tree.querySelectorAll('.folder-row.linked').forEach(r => r.classList.remove('linked'));
+  tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove('linked'));
+
+  const row = tree.querySelector(`.route-row[data-id="${routeId}"]`);
+  if (!row) return;
+
+  let p = row.parentElement;
+  while (p && p !== tree){
+    if (p.classList && p.classList.contains('folder-children')){
+      p.classList.remove('collapsed');
+      const prev = p.previousElementSibling;
+      if (prev && prev.classList.contains('folder-row')){
+        const toggle = prev.querySelector('.folder-toggle');
+        if (toggle) toggle.textContent = '▾';
+      }
+    }
+    p = p.parentElement;
+  }
+
+  row.classList.add('linked');
+  try { row.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
+}
+
 function kmzHighlightRoute(routeId){
   const tree = $('folderTree');
   if (!tree) return;
@@ -575,7 +669,7 @@ function kmzHighlightRoutes(ids){
 }
 
 /* ==========================================================================
-   KMZ — изоляция
+   KMZ — изоляция (по клику на линию)
    ========================================================================== */
 function kmzRestoreIsolation(){
   const prev = K.isolationPrev || {};
@@ -681,6 +775,9 @@ map.on('click', (e) => {
   if (K.isolation && !stopped){
     kmzRestoreIsolation();
   }
+  if (!stopped && K.linked){
+    kmzClearLink();
+  }
   if (!stopped) gponClearBranchHighlight();
 });
 
@@ -714,6 +811,13 @@ function kmzRenderTree(){
   if (!c) return;
   c.innerHTML = '';
   kmzRenderNode(kmzBuildTree(), c, [], true);
+
+  if (K.linked && K.linked.type === 'route'){
+    kmzCollapseExceptRoute(K.linked.id);
+    setTimeout(() => {
+      if (K.linked && K.linked.type === 'route') kmzCollapseExceptRoute(K.linked.id);
+    }, 0);
+  }
 }
 
 function kmzRenderNode(node, container, parts, isRoot){
@@ -929,9 +1033,14 @@ function kmzBuildRouteRow(r){
   const actions = document.createElement('span');
   actions.className = 'route-actions';
   actions.innerHTML = `
+    <button data-act="link-gpon" title="Связать с GPON">🔗</button>
     <button data-act="rename" title="Переименовать">✏️</button>
     <button data-act="merge" title="Отметить">${K.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
     <button data-act="delete" title="Удалить">✕</button>`;
+  actions.querySelector('[data-act="link-gpon"]').onclick = e => {
+    e.stopPropagation();
+    kmzLinkRoute(r.id);
+  };
   actions.querySelector('[data-act="rename"]').onclick = async () => {
     const nn = prompt('Новое имя:', r.name);
     if (!nn) return;
@@ -946,6 +1055,7 @@ function kmzBuildRouteRow(r){
   };
   actions.querySelector('[data-act="delete"]').onclick = async () => {
     if (!confirm(`Удалить "${r.name}"?`)) return;
+    if (K.linked && K.linked.id === r.id) kmzClearLink();
     await fetch(`/route/${r.id}`, { method:'DELETE' });
     K.routes = K.routes.filter(x => x.id !== r.id);
     kmzRemoveLayer(r.id);
@@ -1148,6 +1258,219 @@ async function kmzUpload(files){
   await fetch('/upload', { method:'POST', body:fd });
   await kmzLoadRoutes();
 }
+
+/* ==========================================================================
+   KMZ ↔ GPON: связка по конкретному маршруту
+   ========================================================================== */
+function gponBranchMatchesKmz(gponBranch, kmzKey){
+  if (!gponBranch || !kmzKey) return false;
+  const gb = String(gponBranch).toLowerCase();
+  const kk = String(kmzKey).toLowerCase();
+
+  if (gb === kk) return true;
+  if (gb.endsWith('/' + kk)) return true;
+
+  const gbParts = gb.split('/');
+  const kkParts = kk.split('/');
+  if (kkParts.length <= gbParts.length){
+    let match = true;
+    for (let i = 0; i < kkParts.length; i++){
+      if (gbParts[gbParts.length - kkParts.length + i] !== kkParts[i]){
+        match = false; break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+function gponApplyKmzLinkFilter(){
+  const link = K.linked;
+  if (!link){
+    gponApplyFilters();
+    return;
+  }
+  const key = link.key;
+
+  const fs = G.filters.status;
+  const activeStatusFilter = fs.size > 0;
+
+  const wanted = new Map();
+  for (const m of G.allMarkers){
+    const o = m.__onu;
+    if (o.lat == null) continue;
+    if (activeStatusFilter && !fs.has(o._statusKey)) continue;
+    if (!gponBranchMatchesKmz(o.branch, key)) continue;
+    let arr = wanted.get(o.branch);
+    if (!arr){ arr = []; wanted.set(o.branch, arr); }
+    arr.push(m);
+  }
+
+  for (const branch in G.branchLayers){
+    const cluster = G.branchLayers[branch];
+    const arr = wanted.get(branch) || [];
+    const has = arr.length > 0;
+    const on  = map.hasLayer(cluster);
+
+    if (has && !on && !G.searchMode) cluster.addTo(map);
+    if (!has && on) map.removeLayer(cluster);
+
+    if (!has) continue;
+
+    const cur = _clusterMembers.get(branch);
+    if (cur && cur.size === arr.length){
+      let same = true;
+      for (const m of arr){
+        if (!cur.has(m)){ same = false; break; }
+      }
+      if (same) continue;
+    }
+    cluster.clearLayers();
+    cluster.addLayers(arr);
+    _clusterMembers.set(branch, new Set(arr));
+  }
+}
+
+function gponHighlightLinkedBranches(){
+  const root = $('filter-branch-list');
+  if (!root) return;
+
+  root.querySelectorAll('.filter-item.branch-highlight-linked')
+      .forEach(el => el.classList.remove('branch-highlight-linked'));
+
+  const link = K.linked;
+  if (!link) return;
+  const key = link.key;
+
+  for (const el of root.querySelectorAll('.filter-item')){
+    const cb = el.querySelector('input[data-filter="branch"]');
+    if (!cb) continue;
+    if (gponBranchMatchesKmz(cb.value, key)){
+      el.classList.add('branch-highlight-linked');
+    }
+  }
+}
+
+/** Восстанавливает галочки KMZ к состоянию до связки. */
+function kmzRestoreIsolationIfLinked(){
+  const prev = K.isolationPrev || {};
+  const toShow = [];
+  for (const rr of K.routes){
+    const wasVisible = !!prev[rr.id];
+    if (rr.visible !== wasVisible){
+      rr.visible = wasVisible;
+    }
+    if (wasVisible) toShow.push(rr.id);
+  }
+  K.isolationPrev = null;
+  kmzApplyFilters();
+  kmzUpdateAllTreeCheckboxes();
+  if (toShow.length){
+    patchRoutesBulk(toShow, { visible: true });
+  }
+}
+
+function kmzLinkRoute(routeId){
+  const r = K.routes.find(x => x.id === routeId);
+  if (!r) return;
+
+  if (K.linked && K.linked.id === routeId){
+    kmzClearLink();
+    return;
+  }
+
+  if (K.linked){
+    kmzRestoreIsolationIfLinked();
+  }
+
+  const key = r.branch || r.name;
+  K.linked = { type: 'route', id: r.id, key, folder: r.folder || '' };
+
+  // Запоминаем состояние visible
+  K.isolationPrev = {};
+  for (const rr of K.routes){
+    K.isolationPrev[rr.id] = !!rr.visible;
+  }
+
+  // Оставляем видимым только этот маршрут
+  const toShow = [r.id];
+  const toHide = [];
+  for (const rr of K.routes){
+    const wantVisible = (rr.id === r.id);
+    if (rr.visible !== wantVisible){
+      rr.visible = wantVisible;
+    }
+    if (!wantVisible) toHide.push(rr.id);
+  }
+
+  kmzApplyFilters();
+  kmzUpdateAllTreeCheckboxes();
+
+  if (toHide.length) patchRoutesBulk(toHide, { visible: false });
+  patchRoutesBulk(toShow, { visible: true });
+
+  kmzUpdateLinkBadge();
+  gponApplyKmzLinkFilter();
+  gponHighlightLinkedBranches();
+
+  // Приблизить карту к связанной ветке (KMZ-маршрут + GPON-метки)
+  kmzFitToLinkedRoute();
+  setTimeout(() => {
+    if (K.linked && K.linked.id === routeId) kmzFitToLinkedRoute();
+  }, 150);
+
+  // Свернуть дерево до этого маршрута
+  kmzCollapseExceptRoute(routeId);
+  setTimeout(() => {
+    if (K.linked && K.linked.id === routeId) kmzCollapseExceptRoute(routeId);
+  }, 0);
+
+  // Раскрыть GPON-дерево
+  document.querySelectorAll('#filter-branch-list .branch-group, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-subsub')
+    .forEach(p => {
+      if (p.classList.contains('collapsed')){
+        p.classList.remove('collapsed');
+        const head = p.querySelector(':scope > .branch-group-head, :scope > .branch-subgroup-head, :scope > .branch-subsub-head');
+        if (head){
+          const tt = head.querySelector('.toggle-g, .toggle-s, .toggle-ss');
+          if (tt) tt.textContent = '▾';
+        }
+      }
+    });
+}
+
+function kmzClearLink(){
+  if (!K.linked) return;
+
+  kmzRestoreIsolationIfLinked();
+  K.linked = null;
+
+  const tree = $('folderTree');
+  if (tree){
+    tree.querySelectorAll('.folder-row.linked').forEach(r => r.classList.remove('linked'));
+    tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove('linked'));
+  }
+
+  kmzUpdateLinkBadge();
+  gponApplyKmzLinkFilter();
+  gponHighlightLinkedBranches();
+
+  // Вернуть карту к общему обзору
+  setTimeout(() => kmzFitAll(), 100);
+}
+
+function kmzUpdateLinkBadge(){
+  const b = $('linkBadge');
+  const t = $('linkBadgeText');
+  if (!b || !t) return;
+  if (!K.linked){ b.classList.add('hidden'); return; }
+  b.classList.remove('hidden');
+  t.textContent = `Связка: ${K.linked.key}`;
+}
+
+$('linkBadgeClear').onclick = () => {
+  kmzClearLink();
+};
 
 /* ==========================================================================
    GPON — парсинг
@@ -1449,7 +1772,12 @@ function gponBuildLayers(){
     cluster.addTo(map);
   });
 
-  gponApplyFilters();
+  gponApplyKmzLinkFilter();
+
+  // Если связка активна — пересчитать fitBounds после загрузки GPON
+  if (K.linked){
+    setTimeout(() => kmzFitToLinkedRoute(), 150);
+  }
 }
 
 function gponApplyFilters(){
@@ -1735,6 +2063,8 @@ function gponBuildBranchFilter(){
   el.addEventListener('click', gponFilterClick);
   el.addEventListener('change', gponFilterChange);
   gponSyncChecks();
+
+  gponHighlightLinkedBranches();
 }
 
 function gponBranchGroup(b){
@@ -1777,13 +2107,13 @@ function gponFilterChange(e){
   if (t.matches('input[data-filter="branch"]')){
     const set = G.filters.branch;
     if (t.checked) set.add(t.value); else set.delete(t.value);
-    gponApplyFilters(); gponSyncChecks();
+    gponApplyKmzLinkFilter(); gponSyncChecks();
     return;
   }
   if (t.matches('input[data-filter="status"]')){
     const set = G.filters.status;
     if (t.checked) set.add(t.value); else set.delete(t.value);
-    gponApplyFilters();
+    gponApplyKmzLinkFilter();
     return;
   }
   const box = t.closest('.group-check, .subgroup-check, .subsub-check');
@@ -1796,7 +2126,7 @@ function gponFilterChange(e){
     c.checked = box.checked;
     if (box.checked) set.add(c.value); else set.delete(c.value);
   }
-  gponApplyFilters(); gponSyncChecks();
+  gponApplyKmzLinkFilter(); gponSyncChecks();
 }
 
 function gponSyncChecks(){
@@ -1857,7 +2187,7 @@ function gponSearch(q){
   }
   if (!q){
     G.searchMode = false;
-    gponApplyFilters();
+    gponApplyKmzLinkFilter();
     $('s-found').textContent = '—';
     return;
   }
@@ -2088,7 +2418,7 @@ $('reset-filters').onclick = () => {
   document.querySelectorAll('#filter-branch-list .filter-item, #filter-branch-list .branch-subsub, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-group')
     .forEach(el => el.style.display = '');
   gponClearBranchHighlight();
-  gponApplyFilters();
+  gponApplyKmzLinkFilter();
 };
 
 /* ==========================================================================
