@@ -1,7 +1,9 @@
 import io
 import os
+import re
 import json
 import atexit
+import shutil
 import threading
 import zipfile
 import xml.etree.ElementTree as ET
@@ -26,8 +28,8 @@ PERSIST = {'customFolders': set()}
 # Ленивая запись state.json:
 #   - _state_dirty — флаг «есть несохранённые изменения»
 #   - _state_timer — отложенный таймер на запись через _STATE_DEBOUNCE_SEC
-#   - _save_state_now() — синхронная запись (вызывается из таймера и atexit)
-#   - _save_state()     — пометить грязным + запустить таймер, если не запущен
+#   - _save_state_now()   — синхронная запись
+#   - _save_state()       — пометить грязным + запустить таймер
 _state_dirty = False
 _state_timer = None
 _STATE_DEBOUNCE_SEC = 0.8
@@ -66,7 +68,6 @@ def _save_state():
     """
     Ленивая запись: помечаем состояние грязным и, если таймер ещё не запущен,
     запускаем отложенную запись через _STATE_DEBOUNCE_SEC.
-    Несколько вызовов подряд приведут к одной записи на диск.
     """
     global _state_dirty, _state_timer
     with _state_lock:
@@ -130,8 +131,7 @@ def _touch_routes():
 
 # ============================ STATE (GPON) ============================
 # GPON-состояние живёт в памяти и персистится в data/gpon_state.json.
-# Оно полностью независимо от state.json: правки маршрутов не трогают
-# GPON, правки GPON не перезаписывают маршруты.
+# Оно полностью независимо от state.json.
 GPON = {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}
 
 _gpon_lock = threading.RLock()
@@ -171,11 +171,7 @@ def _save_gpon_flush():
 
 
 def _save_gpon():
-    """
-    Ленивая запись: помечаем состояние грязным и, если таймер ещё не запущен,
-    запускаем отложенную запись через _GPON_DEBOUNCE_SEC.
-    Несколько вызовов подряд приведут к одной записи на диск.
-    """
+    """Ленивая запись gpon_state.json с debounce."""
     global _gpon_dirty, _gpon_timer
     with _gpon_lock:
         _gpon_dirty = True
@@ -347,11 +343,7 @@ def patch_route(rid):
 
 @app.route('/routes/bulk', methods=['PATCH'])
 def patch_routes_bulk():
-    """
-    Массовое обновление маршрутов одним запросом.
-    Тело: { "ids": [1,2,3], "patch": { "visible": true, "folder": "A/B" } }
-    Делает одну запись state.json вместо N.
-    """
+    """Массовое обновление маршрутов одним запросом."""
     data = request.get_json(force=True, silent=True) or {}
     ids = data.get('ids', [])
     patch = data.get('patch', {})
@@ -380,13 +372,13 @@ def patch_routes_bulk():
         updated.append(rid)
 
     if applied:
-        _save_state()   # ленивая запись: одна на серию быстрых запросов
+        _save_state()
     return jsonify({'ok': True, 'applied': applied, 'ids': updated})
 
 
 @app.route('/routes/bulk', methods=['DELETE'])
 def delete_routes_bulk():
-    """Массовое удаление маршрутов. Тело: { "ids": [1,2,3] }."""
+    """Массовое удаление маршрутов."""
     data = request.get_json(force=True, silent=True) or {}
     ids = data.get('ids', [])
     if not isinstance(ids, list):
@@ -461,6 +453,101 @@ def export():
                      as_attachment=True, download_name='routes.kmz')
 
 
+# ============================ EXPORT TREE ============================
+_SAFE_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _safe_name(s: str) -> str:
+    """Превращает произвольную строку в безопасное имя файла/папки."""
+    s = (s or '').strip()
+    s = _SAFE_RE.sub('_', s)
+    s = s.rstrip(' .')
+    if not s:
+        s = 'unnamed'
+    if s.upper() in {'CON','PRN','AUX','NUL',
+                     'COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
+                     'LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'}:
+        s = '_' + s
+    return s
+
+
+def _tree_route_relative_path(r: dict) -> str:
+    """<folder1>/<folder2>/.../<branch или name>.kmz"""
+    parts = []
+    folder = (r.get('folder') or '').strip()
+    if folder:
+        parts.extend(_safe_name(p) for p in folder.split('/') if p.strip())
+    base = r.get('branch') or r.get('name') or f'route_{r.get("id")}'
+    parts.append(_safe_name(base) + '.kmz')
+    return os.path.join(*parts)
+
+
+def _write_route_kmz_to_file(r: dict, path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    kml = simplekml.Kml()
+    ls = kml.newlinestring(name=r.get('name') or '')
+    ls.coords = [(p[1], p[0]) for p in r.get('points', [])]
+    kml.savekmz(path)
+
+
+@app.route('/export_tree', methods=['POST'])
+def export_tree():
+    """
+    Зеркалит дерево маршрутов в uploads/tree/<folder...>/<branch|name>.kmz.
+    Перед записью полностью очищает uploads/tree/.
+    Возвращает ZIP со всей структурой.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    only_visible = bool(data.get('only_visible'))
+
+    tree_root = os.path.join(UPLOAD_DIR, 'tree')
+    if os.path.exists(tree_root):
+        try:
+            shutil.rmtree(tree_root)
+        except OSError as e:
+            print('export_tree: rmtree failed:', e)
+    os.makedirs(tree_root, exist_ok=True)
+
+    written = 0
+    skipped = 0
+    used_paths = set()
+    for r in ROUTES.values():
+        if only_visible and not r.get('visible'):
+            skipped += 1
+            continue
+        rel = _tree_route_relative_path(r)
+        full = os.path.join(tree_root, rel)
+        if full in used_paths:
+            base, ext = os.path.splitext(full)
+            i = 2
+            while f'{base}__{i}{ext}' in used_paths:
+                i += 1
+            full = f'{base}__{i}{ext}'
+        used_paths.add(full)
+        try:
+            _write_route_kmz_to_file(r, full)
+            written += 1
+        except OSError as e:
+            print('export_tree: write failed for', r.get('id'), e)
+            skipped += 1
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, files in os.walk(tree_root):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, tree_root)
+                z.write(full, rel)
+    buf.seek(0)
+
+    return send_file(
+        buf,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='routes_tree.zip',
+    )
+
+
 # ============================ FOLDERS ============================
 @app.route('/folders', methods=['GET'])
 def folders_get():
@@ -515,7 +602,6 @@ def folders_rename():
 # ============================ STATE EXPORT / IMPORT (KMZ) ============================
 @app.route('/state/export', methods=['GET'])
 def state_export():
-    """Отдаёт state.json (только KMZ). GPON теперь в /gpon/state/export."""
     if not os.path.exists(STATE_FILE):
         return jsonify({'routes': [], 'customFolders': [], 'next_id': 1})
     return send_file(STATE_FILE, mimetype='application/json',
@@ -524,7 +610,6 @@ def state_export():
 
 @app.route('/state/import', methods=['POST'])
 def state_import():
-    """Импорт state.json (только KMZ). GPON сюда не входит — см. /gpon/state/import."""
     global _next_id
     f = request.files.get('file')
     if not f:
@@ -542,6 +627,70 @@ def state_import():
     return jsonify({'ok': True,
                     'routes': len(ROUTES),
                     'folders': len(PERSIST['customFolders'])})
+
+
+# ============================ GPON PARTIAL SAVE ============================
+@app.route('/gpon/geo', methods=['POST'])
+def gpon_geo_save():
+    """
+    Сохраняет весь geo-словарь и geoFiles.
+    Тело: { "geo": {...}, "geoFiles": [...] }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data.get('geo'), dict):
+        return jsonify({'error': 'geo must be dict'}), 400
+
+    with _gpon_lock:
+        GPON['geo'] = data['geo']
+        if 'geoFiles' in data:
+            GPON['geoFiles'] = list(data.get('geoFiles') or [])
+    _save_gpon()
+    return jsonify({'ok': True, 'geo': len(GPON['geo'])})
+
+
+@app.route('/gpon/onus', methods=['POST'])
+def gpon_onus_save():
+    """
+    Сохраняет только onus и vgFile.
+    Тело: { "onus": [...], "vgFile": "..." }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data.get('onus'), list):
+        return jsonify({'error': 'onus must be list'}), 400
+
+    with _gpon_lock:
+        GPON['onus'] = data['onus']
+        if 'vgFile' in data:
+            GPON['vgFile'] = data.get('vgFile')
+    _save_gpon()
+    return jsonify({'ok': True, 'onus': len(GPON['onus'])})
+
+
+# ============================ GPON GEO POINT EDIT ============================
+@app.route('/gpon/geo/point', methods=['POST'])
+def gpon_geo_point_edit():
+    """
+    Обновляет одну точку geo: кладёт по нормализованному адресу {lat, lng, address}.
+    Тело: { "addr": "...", "lat": 45.3, "lng": 38.1, "address": "исходный адрес" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    addr = (data.get('addr') or '').strip()
+    try:
+        lat = float(data.get('lat'))
+        lng = float(data.get('lng'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad lat/lng'}), 400
+    if not addr:
+        return jsonify({'error': 'empty addr'}), 400
+
+    with _gpon_lock:
+        GPON['geo'][addr] = {
+            'lat': lat,
+            'lng': lng,
+            'address': data.get('address') or addr,
+        }
+    _save_gpon()
+    return jsonify({'ok': True, 'addr': addr, 'lat': lat, 'lng': lng})
 
 
 # ============================ GPON STATE ============================
@@ -568,7 +717,7 @@ def gpon_state_post():
             GPON['geoFiles'] = list(data.get('geoFiles') or [])
         if 'vgFile' in data:
             GPON['vgFile'] = data.get('vgFile')
-    _save_gpon()   # ленивая запись: одна на серию быстрых POST-ов
+    _save_gpon()
     return jsonify({
         'ok': True,
         'geo': len(GPON['geo']),
@@ -589,7 +738,6 @@ def gpon_state_delete():
 
 @app.route('/gpon/state/export', methods=['GET'])
 def gpon_state_export():
-    """Скачать gpon_state.json отдельно от state.json."""
     if not os.path.exists(GPON_FILE):
         return jsonify({'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None})
     return send_file(GPON_FILE, mimetype='application/json',
@@ -598,7 +746,6 @@ def gpon_state_export():
 
 @app.route('/gpon/state/import', methods=['POST'])
 def gpon_state_import():
-    """Импорт gpon_state.json (geo + onus). Не трогает state.json."""
     f = request.files.get('file')
     if not f:
         return jsonify({'error': 'no file'}), 400
