@@ -25,6 +25,11 @@ _next_id = 1
 _state_lock = threading.RLock()
 PERSIST = {'customFolders': set()}
 
+# Ленивая запись state.json:
+#   - _state_dirty — флаг «есть несохранённые изменения»
+#   - _state_timer — отложенный таймер на запись через _STATE_DEBOUNCE_SEC
+#   - _save_state_now()   — синхронная запись
+#   - _save_state()       — пометить грязным + запустить таймер
 _state_dirty = False
 _state_timer = None
 _STATE_DEBOUNCE_SEC = 0.8
@@ -627,6 +632,10 @@ def state_import():
 # ============================ GPON PARTIAL SAVE ============================
 @app.route('/gpon/geo', methods=['POST'])
 def gpon_geo_save():
+    """
+    Сохраняет весь geo-словарь и geoFiles.
+    Тело: { "geo": {...}, "geoFiles": [...] }
+    """
     data = request.get_json(force=True, silent=True) or {}
     if not isinstance(data.get('geo'), dict):
         return jsonify({'error': 'geo must be dict'}), 400
@@ -641,6 +650,10 @@ def gpon_geo_save():
 
 @app.route('/gpon/onus', methods=['POST'])
 def gpon_onus_save():
+    """
+    Сохраняет только onus и vgFile.
+    Тело: { "onus": [...], "vgFile": "..." }
+    """
     data = request.get_json(force=True, silent=True) or {}
     if not isinstance(data.get('onus'), list):
         return jsonify({'error': 'onus must be list'}), 400
@@ -651,6 +664,33 @@ def gpon_onus_save():
             GPON['vgFile'] = data.get('vgFile')
     _save_gpon()
     return jsonify({'ok': True, 'onus': len(GPON['onus'])})
+
+
+# ============================ GPON GEO POINT EDIT ============================
+@app.route('/gpon/geo/point', methods=['POST'])
+def gpon_geo_point_edit():
+    """
+    Обновляет одну точку geo: кладёт по нормализованному адресу {lat, lng, address}.
+    Тело: { "addr": "...", "lat": 45.3, "lng": 38.1, "address": "исходный адрес" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    addr = (data.get('addr') or '').strip()
+    try:
+        lat = float(data.get('lat'))
+        lng = float(data.get('lng'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad lat/lng'}), 400
+    if not addr:
+        return jsonify({'error': 'empty addr'}), 400
+
+    with _gpon_lock:
+        GPON['geo'][addr] = {
+            'lat': lat,
+            'lng': lng,
+            'address': data.get('address') or addr,
+        }
+    _save_gpon()
+    return jsonify({'ok': True, 'addr': addr, 'lat': lat, 'lng': lng})
 
 
 # ============================ GPON STATE ============================

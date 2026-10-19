@@ -178,11 +178,118 @@ button,input,select{font:inherit;color:inherit}
   padding:8px 11px;margin-bottom:10px;font-family:ui-monospace,Consolas,monospace;
   font-size:11.5px;color:var(--muted);white-space:pre-wrap;line-height:1.5}
 
-.onu-popup{font-size:12px;line-height:1.45;min-width:260px}
+.onu-popup{font-size:12px;line-height:1.45;min-width:280px}
 .onu-popup b{color:var(--accent)}
 .onu-popup .stat-active{color:var(--ok);font-weight:700}
 .onu-popup .stat-off{color:var(--err);font-weight:700}
 .onu-popup .stat-block{color:var(--warn);font-weight:700}
+
+/* Кнопки в попапе ONU */
+.onu-popup button{
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  margin-right: 4px;
+}
+.onu-popup button:hover{ border-color: var(--accent); color: var(--accent); }
+.onu-popup button.primary{
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.onu-popup button.primary:hover{ filter: brightness(1.1); color: #fff; }
+.onu-popup button.warn{
+  background: var(--switch); color: #111; border-color: var(--switch);
+}
+.onu-popup button.warn:hover{ filter: brightness(1.1); color: #111; }
+
+/* Поля ввода координат в попапе редактирования */
+.onu-edit-popup input{
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 6px;
+  width: 100%;
+  margin-top: 2px;
+}
+.onu-edit-popup input:focus{
+  outline: none;
+  border-color: var(--accent);
+}
+.onu-edit-popup label{
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Пульсация редактируемой метки */
+.onu-marker.editable{
+  cursor: grab !important;
+  animation: pulse 1.2s infinite;
+}
+.onu-marker.editable:active{
+  cursor: grabbing !important;
+}
+@keyframes pulse{
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(251,191,36,0)); }
+  50%      { filter: drop-shadow(0 0 8px rgba(251,191,36,.95)); }
+}
+
+/* Подсказка снизу карты */
+#editHint{
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  background: rgba(15,23,42,.95);
+  color: var(--text);
+  border: 1px solid var(--switch);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  z-index: 1000;
+  box-shadow: var(--shadow);
+  max-width: 80%;
+  text-align: center;
+  pointer-events: none;
+}
+#editHint.hidden{ display: none; }
+
+/* Панель «Без координат» */
+.gpon-nogeo-list{
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-top: 4px;
+}
+.gpon-nogeo-item{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.gpon-nogeo-item:last-child{ border-bottom: none; }
+.gpon-nogeo-item:hover{ background: var(--panel); }
+.gpon-nogeo-item .addr{ flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpon-nogeo-item button{
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.gpon-nogeo-item button:hover{ border-color: var(--accent); }
 
 .leaflet-popup-content-wrapper{background:var(--panel);color:var(--text);border:1px solid var(--line)}
 .leaflet-popup-tip{background:var(--panel);border:1px solid var(--line)}
@@ -229,11 +336,6 @@ button,input,select{font:inherit;color:inherit}
     <input class="input" id="search" placeholder="🔎 Поиск…">
     <button class="btn icon" id="theme" title="Тема">🌙</button>
 
-    <div class="iso-badge hidden" id="isoBadge">
-      <span id="isoBadgeText"></span>
-      <button id="isoBadgeClear" title="Снять изоляцию">✕</button>
-    </div>
-
     <div class="iso-badge hidden" id="linkBadge" title="Связка KMZ ↔ GPON">
       <span id="linkBadgeText"></span>
       <button id="linkBadgeClear" title="Снять связку">✕</button>
@@ -258,10 +360,13 @@ button,input,select{font:inherit;color:inherit}
         <div class="side-title">Ветка GPON</div>
         <input class="input" id="filter-branch" placeholder="Фильтр веток…" style="width:100%;margin-bottom:6px">
         <div id="filter-branch-list"></div>
+        <div class="side-title">Без координат <span id="nogeo-count" style="color:var(--muted);font-weight:400"></span></div>
+        <div id="gpon-nogeo-list" class="gpon-nogeo-list"></div>
       </div>
     </aside>
     <main class="content">
       <div id="map"></div>
+      <div id="editHint" class="hidden"></div>
     </main>
   </div>
 </div>
@@ -325,12 +430,11 @@ const State = {
     layers: new Map(),
     hiddenBranches: new Set(),
     mergeMarked: new Set(),
-    isolation: null,
     isolationPrev: null,
     customFolders: new Set(),
     dragPayload: null,
     search: '',
-    linked: null,   // { type:'route', id, key, folder }
+    linked: null,
   },
   gpon: {
     geo: new Map(),
@@ -343,6 +447,8 @@ const State = {
     searchHighlightLayer: null,
     geoFiles: [],
     vgFile: '',
+    editMode: null,
+    nogeoLayer: null,
   },
 };
 
@@ -376,10 +482,8 @@ function setMode(mode){
   if (mode === 'kmz'){
     kmzRenderTree();
     kmzApplyFilters();
-    kmzUpdateBadge();
     $('s-routes').textContent = K.routes.length;
   } else {
-    $('isoBadge').classList.add('hidden');
     gponUpdateStats();
   }
 
@@ -441,7 +545,11 @@ function kmzBuildLayer(r){
 
   line.on('click', (e) => {
     L.DomEvent.stopPropagation(e);
-    kmzIsolate(r);
+    if (K.linked && K.linked.id === r.id){
+      kmzClearLink();
+    } else {
+      kmzLinkRoute(r.id);
+    }
   });
   line.bindTooltip(r.name, { sticky:true });
 
@@ -480,7 +588,7 @@ function kmzAddLayersFor(routes){
 }
 
 function kmzFitAll(){
-  if (K.isolation) return;
+  if (K.linked) return;
   const all = [];
   for (const layer of K.layers.values()){
     const ls = layer.getLayers ? layer.getLayers() : [layer];
@@ -495,23 +603,16 @@ function kmzFitAll(){
   }
 }
 
-/**
- * Приближает карту к связанной ветке: точки KMZ-маршрута +
- * координаты GPON-меток, попавших под фильтр связки.
- */
 function kmzFitToLinkedRoute(){
   const link = K.linked;
   if (!link) return;
 
   const pts = [];
-
-  // 1. Точки KMZ-маршрута
   const r = K.routes.find(x => x.id === link.id);
   if (r && r.points && r.points.length){
     for (const p of r.points) pts.push([p[0], p[1]]);
   }
 
-  // 2. GPON-метки, попавшие под фильтр связки
   const key = link.key;
   const fs  = G.filters.status;
   const activeStatusFilter = fs.size > 0;
@@ -523,12 +624,8 @@ function kmzFitToLinkedRoute(){
   }
 
   if (!pts.length) return;
-
   try {
-    map.fitBounds(L.latLngBounds(pts), {
-      padding: [60, 60],
-      maxZoom: 17,
-    });
+    map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 17 });
   } catch(_){}
 }
 
@@ -544,13 +641,6 @@ function kmzApplyFilters(){
       const hay = `${r.name} ${r.branch||''} ${r.folder||''}`.toLowerCase();
       if (!hay.includes(q)) visible = false;
     }
-    if (K.isolation){
-      if (K.isolation.type === 'branch'){
-        if ((r.branch || '__none__') !== K.isolation.key) visible = false;
-      } else {
-        if (r.id !== K.isolation.key) visible = false;
-      }
-    }
 
     if (visible){ if (!map.hasLayer(layer)) layer.addTo(map); }
     else        { if (map.hasLayer(layer)) map.removeLayer(layer); }
@@ -565,13 +655,6 @@ function kmzCollapseAllFolders(){
   if (!tree) return;
   tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.add('collapsed'));
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
-}
-
-function kmzExpandAllFolders(){
-  const tree = $('folderTree');
-  if (!tree) return;
-  tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.remove('collapsed'));
-  tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▾');
 }
 
 function kmzExpandPathTo(folderPath, routeId){
@@ -602,7 +685,6 @@ function kmzExpandPathTo(folderPath, routeId){
   if (routeId != null) kmzHighlightRoute(routeId);
 }
 
-/** Сворачивает дерево до пути указанного маршрута, подсвечивает его. */
 function kmzCollapseExceptRoute(routeId){
   const tree = $('folderTree');
   if (!tree) return;
@@ -645,33 +727,10 @@ function kmzHighlightRoute(routeId){
   kmzHighlightRoute._t = setTimeout(() => row.classList.remove('highlighted'), 2000);
 }
 
-function kmzHighlightRoutes(ids){
-  const tree = $('folderTree');
-  if (!tree) return;
-  tree.querySelectorAll('.route-row.highlighted')
-      .forEach(el => el.classList.remove('highlighted'));
-  let first = null;
-  for (const id of ids){
-    const row = tree.querySelector(`.route-row[data-id="${id}"]`);
-    if (row){
-      row.classList.add('highlighted');
-      if (!first) first = row;
-    }
-  }
-  if (first){
-    try { first.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
-  }
-  clearTimeout(kmzHighlightRoutes._t);
-  kmzHighlightRoutes._t = setTimeout(() => {
-    tree.querySelectorAll('.route-row.highlighted')
-        .forEach(el => el.classList.remove('highlighted'));
-  }, 2000);
-}
-
 /* ==========================================================================
-   KMZ — изоляция (по клику на линию)
+   KMZ — восстановление галочек
    ========================================================================== */
-function kmzRestoreIsolation(){
+function kmzRestoreIsolationIfLinked(){
   const prev = K.isolationPrev || {};
   const toShow = [];
   for (const rr of K.routes){
@@ -681,100 +740,24 @@ function kmzRestoreIsolation(){
     }
     if (wasVisible) toShow.push(rr.id);
   }
-  K.isolation = null;
   K.isolationPrev = null;
-
   kmzApplyFilters();
-  kmzUpdateBadge();
   kmzUpdateAllTreeCheckboxes();
-
   if (toShow.length){
     patchRoutesBulk(toShow, { visible: true });
   }
 }
 
-function kmzIsolate(r){
-  const type = r.branch ? 'branch' : 'route';
-  const key = r.branch || '__none__';
-  const isolKey = type === 'branch' ? key : r.id;
-
-  const same = K.isolation && K.isolation.type === type && K.isolation.key === isolKey;
-  if (same){
-    kmzRestoreIsolation();
+map.on('click', (e) => {
+  if (G.editMode && G.editMode.type === 'set'){
+    L.DomEvent.stopPropagation(e);
+    gponHandleMapClickForSet(e.latlng);
     return;
   }
 
-  if (K.isolation){
-    kmzRestoreIsolation();
-  }
-
-  K.isolationPrev = {};
-  for (const rr of K.routes){
-    K.isolationPrev[rr.id] = !!rr.visible;
-  }
-
-  K.isolation = { type, key: isolKey };
-
-  const idsToShow = type === 'branch'
-    ? K.routes.filter(x => (x.branch || '__none__') === key).map(x => x.id)
-    : [r.id];
-  const showSet = new Set(idsToShow);
-
-  const toHide = [];
-  const toShowNow = [];
-  for (const rr of K.routes){
-    const wantVisible = showSet.has(rr.id);
-    if (rr.visible !== wantVisible){
-      rr.visible = wantVisible;
-    }
-    if (wantVisible) toShowNow.push(rr.id);
-    else toHide.push(rr.id);
-  }
-
-  kmzApplyFilters();
-  kmzUpdateBadge();
-  kmzUpdateAllTreeCheckboxes();
-
-  if (toHide.length)    patchRoutesBulk(toHide,    { visible: false });
-  if (toShowNow.length) patchRoutesBulk(toShowNow, { visible: true });
-
-  kmzExpandPathTo(r.folder || '', null);
-  kmzHighlightRoutes(idsToShow);
-
-  const pts = [];
-  for (const id of idsToShow){
-    const rr = K.routes.find(x => x.id === id);
-    if (!rr) continue;
-    for (const p of rr.points) pts.push([p[0], p[1]]);
-  }
-  if (pts.length){
-    try { map.fitBounds(L.latLngBounds(pts), { padding:[40,40] }); } catch(_){}
-  }
-}
-
-function kmzUpdateBadge(){
-  const b = $('isoBadge');
-  const t = $('isoBadgeText');
-  if (!K.isolation || State.mode !== 'kmz'){ b.classList.add('hidden'); return; }
-  b.classList.remove('hidden');
-  if (K.isolation.type === 'branch'){
-    t.textContent = `Изоляция: ${K.isolation.key}`;
-  } else {
-    const r = K.routes.find(x => x.id === K.isolation.key);
-    t.textContent = `Изоляция: ${r ? r.name : '—'}`;
-  }
-}
-
-$('isoBadgeClear').onclick = () => {
-  if (K.isolation) kmzRestoreIsolation();
-};
-
-map.on('click', (e) => {
   if (__curPopup){ __curPopup.closePopup(); __curPopup = null; }
   const stopped = e.originalEvent && e.originalEvent._stopped;
-  if (K.isolation && !stopped){
-    kmzRestoreIsolation();
-  }
+
   if (!stopped && K.linked){
     kmzClearLink();
   }
@@ -1351,25 +1334,6 @@ function gponHighlightLinkedBranches(){
   }
 }
 
-/** Восстанавливает галочки KMZ к состоянию до связки. */
-function kmzRestoreIsolationIfLinked(){
-  const prev = K.isolationPrev || {};
-  const toShow = [];
-  for (const rr of K.routes){
-    const wasVisible = !!prev[rr.id];
-    if (rr.visible !== wasVisible){
-      rr.visible = wasVisible;
-    }
-    if (wasVisible) toShow.push(rr.id);
-  }
-  K.isolationPrev = null;
-  kmzApplyFilters();
-  kmzUpdateAllTreeCheckboxes();
-  if (toShow.length){
-    patchRoutesBulk(toShow, { visible: true });
-  }
-}
-
 function kmzLinkRoute(routeId){
   const r = K.routes.find(x => x.id === routeId);
   if (!r) return;
@@ -1386,13 +1350,11 @@ function kmzLinkRoute(routeId){
   const key = r.branch || r.name;
   K.linked = { type: 'route', id: r.id, key, folder: r.folder || '' };
 
-  // Запоминаем состояние visible
   K.isolationPrev = {};
   for (const rr of K.routes){
     K.isolationPrev[rr.id] = !!rr.visible;
   }
 
-  // Оставляем видимым только этот маршрут
   const toShow = [r.id];
   const toHide = [];
   for (const rr of K.routes){
@@ -1413,19 +1375,16 @@ function kmzLinkRoute(routeId){
   gponApplyKmzLinkFilter();
   gponHighlightLinkedBranches();
 
-  // Приблизить карту к связанной ветке (KMZ-маршрут + GPON-метки)
   kmzFitToLinkedRoute();
   setTimeout(() => {
     if (K.linked && K.linked.id === routeId) kmzFitToLinkedRoute();
   }, 150);
 
-  // Свернуть дерево до этого маршрута
   kmzCollapseExceptRoute(routeId);
   setTimeout(() => {
     if (K.linked && K.linked.id === routeId) kmzCollapseExceptRoute(routeId);
   }, 0);
 
-  // Раскрыть GPON-дерево
   document.querySelectorAll('#filter-branch-list .branch-group, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-subsub')
     .forEach(p => {
       if (p.classList.contains('collapsed')){
@@ -1455,7 +1414,6 @@ function kmzClearLink(){
   gponApplyKmzLinkFilter();
   gponHighlightLinkedBranches();
 
-  // Вернуть карту к общему обзору
   setTimeout(() => kmzFitAll(), 100);
 }
 
@@ -1581,23 +1539,6 @@ async function gponSaveOnus(){
   }
 }
 
-async function gponSaveState(){
-  try {
-    await fetch('/gpon/state', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        geo:  Object.fromEntries(G.geo),
-        onus: G.onus,
-        geoFiles: G.geoFiles,
-        vgFile: G.vgFile,
-      }),
-    });
-  } catch(e){
-    console.warn('gpon state save failed', e);
-  }
-}
-
 async function gponLoadState(){
   try {
     const res = await fetch('/gpon/state');
@@ -1676,6 +1617,8 @@ async function gponClearState(){
     map.removeLayer(G.searchHighlightLayer);
     G.searchHighlightLayer = null;
   }
+  G.editMode = null;
+  gponHideEditHint();
 
   $('fileGeoBtn').classList.remove('active');
   $('fileGeoBtn').childNodes[0].nodeValue = '📂 Excel (geo*.xlsx) ';
@@ -1683,6 +1626,8 @@ async function gponClearState(){
   $('fileVgBtn').childNodes[0].nodeValue = '📂 vgroups.csv ';
   $('filter-status').innerHTML = '';
   $('filter-branch-list').innerHTML = '';
+  const nl = $('gpon-nogeo-list'); if (nl) nl.innerHTML = '';
+  const nc = $('nogeo-count');     if (nc) nc.textContent = '';
   $('diag').textContent = 'Загрузите Excel (geo*.xlsx) и vgroups.csv.';
   gponUpdateStats();
 
@@ -1719,18 +1664,60 @@ function gponBindPopup(layer){
   layer.bindPopup(gponBuildPopup(layer.__onu), {
     closeButton:false, offset:[0,-5], autoClose:false, closeOnClick:false, autoPan:false,
   });
+
+  layer.off('mouseover');
+  layer.off('click');
+  layer.off('popupopen');
+
   layer.on('mouseover', function(){
+    if (layer._editModeActive) return;
     if (__curPopup && __curPopup !== this) __curPopup.closePopup();
     __curPopup = this;
     this.openPopup();
   });
+
   layer.on('click', function(e){
     L.DomEvent.stopPropagation(e);
+    if (layer._editModeActive) return;
     gponHighlightBranchInTree(layer.__onu.branch);
+  });
+
+  layer.on('popupopen', function(){
+    const popupEl = layer.getPopup().getElement();
+    if (!popupEl) return;
+
+    popupEl.addEventListener('mousedown', (ev) => {
+      ev.stopPropagation();
+    });
+    popupEl.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+
+      const btn = ev.target.closest('button');
+      if (!btn) return;
+
+      const action = btn.dataset.action;
+
+      if (action === 'save'){
+        ev.preventDefault();
+        gponSaveEditedMarker(layer);
+        return;
+      }
+      if (action === 'cancel'){
+        ev.preventDefault();
+        gponCancelEditMarker(layer);
+        return;
+      }
+      if (btn.id && btn.id.startsWith('onu-edit-')){
+        if (layer._editModeActive) return;
+        ev.preventDefault();
+        gponStartEditMarker(layer);
+      }
+    });
   });
 }
 
 function gponBuildPopup(o){
+  const hasCoords = (o.lat != null && o.lng != null);
   return `<div class="onu-popup">
     <div><b>Ветка:</b> ${esc(o.branch)}</div>
     <div><b>ONU ID:</b> ${esc(o.id)}</div>
@@ -1738,6 +1725,9 @@ function gponBuildPopup(o){
     <div><b>Статус:</b> <span class="${GPON_STATUS_CLASS[o._statusKey]||''}">${esc(o.status)}</span></div>
     <hr style="margin:5px 0;border:none;border-top:1px solid #ddd">
     <div><b>Адрес:</b> ${esc(o.address)}</div>
+    <div style="margin-top:6px">
+      <button type="button" id="onu-edit-${esc(o.id)}" class="warn">📌 ${hasCoords ? 'Перетащить' : 'Указать место'}</button>
+    </div>
   </div>`;
 }
 
@@ -1759,7 +1749,10 @@ function gponBuildLayers(){
     const arr = [];
     for (const p of onus){
       if (p.lat == null) continue;
-      const m = L.marker([p.lat, p.lng], { icon: gponGetIcon(GPON_STATUS_COLOR[p._statusKey]) });
+      const m = L.marker([p.lat, p.lng], {
+        icon: gponGetIcon(GPON_STATUS_COLOR[p._statusKey]),
+        draggable: false,
+      });
       m.__onu = p;
       gponBindPopup(m);
       arr.push(m);
@@ -1774,10 +1767,11 @@ function gponBuildLayers(){
 
   gponApplyKmzLinkFilter();
 
-  // Если связка активна — пересчитать fitBounds после загрузки GPON
   if (K.linked){
     setTimeout(() => kmzFitToLinkedRoute(), 150);
   }
+
+  gponRebuildNogeoList();
 }
 
 function gponApplyFilters(){
@@ -1821,6 +1815,265 @@ function gponApplyFilters(){
     cluster.addLayers(arr);
     _clusterMembers.set(branch, new Set(arr));
   }
+}
+
+/* ==========================================================================
+   GPON — редактирование геометок
+   ========================================================================== */
+function gponGeoKeyForOnu(o){
+  return gponNormAddr(o.address);
+}
+
+function gponStartEditMarker(marker){
+  const o = marker.__onu;
+
+  G.editMode = {
+    type: 'move',
+    onuId: o.id,
+    marker,
+    originalLat: o.lat,
+    originalLng: o.lng,
+    originalGeoKey: gponGeoKeyForOnu(o),
+  };
+
+  if (marker.dragging) marker.dragging.enable();
+  marker.setZIndexOffset(9999);
+
+  const el = marker.getElement();
+  if (el) el.classList.add('editable');
+
+  marker._editModeActive = true;
+
+  marker.closePopup();
+
+  const curLat = o.lat != null ? o.lat.toFixed(7) : '';
+  const curLng = o.lng != null ? o.lng.toFixed(7) : '';
+
+  marker.setPopupContent(`
+    <div class="onu-popup onu-edit-popup">
+      <div><b>Ветка:</b> ${esc(o.branch)}</div>
+      <div><b>ONU ID:</b> ${esc(o.id)}</div>
+      <div><b>Логин:</b> ${esc(o.login)}</div>
+      <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <label>Широта
+          <input type="text" id="onu-lat-${esc(o.id)}" value="${curLat}"
+            inputmode="decimal" autocomplete="off" />
+        </label>
+        <label>Долгота
+          <input type="text" id="onu-lng-${esc(o.id)}" value="${curLng}"
+            inputmode="decimal" autocomplete="off" />
+        </label>
+      </div>
+      <div style="margin-top:8px">
+        <button type="button" class="primary" data-action="save">✓ Сохранить</button>
+        <button type="button" data-action="cancel">↺ Отменить</button>
+      </div>
+      <div style="color:var(--muted);font-size:11px;margin-top:4px">
+        Введите координаты или перетащите метку.
+      </div>
+    </div>
+  `);
+
+  marker.openPopup();
+
+  setTimeout(() => {
+    const latEl = document.getElementById(`onu-lat-${o.id}`);
+    const lngEl = document.getElementById(`onu-lng-${o.id}`);
+    if (!latEl || !lngEl) return;
+
+    // При перетаскивании маркера — подставить новые координаты в поля.
+    const syncInputsFromMarker = () => {
+      const ll = marker.getLatLng();
+      latEl.value = ll.lat.toFixed(7);
+      lngEl.value = ll.lng.toFixed(7);
+    };
+
+    marker.on('drag',  syncInputsFromMarker);
+    marker.on('dragend', () => {
+      syncInputsFromMarker();
+      if (!marker.isPopupOpen()) marker.openPopup();
+    });
+  }, 0);
+
+  gponShowEditHint('Введите координаты вручную или перетащите метку, затем «✓ Сохранить».');
+}
+
+async function gponSaveEditedMarker(marker){
+  const o = marker.__onu;
+
+  const latEl = document.getElementById(`onu-lat-${o.id}`);
+  const lngEl = document.getElementById(`onu-lng-${o.id}`);
+
+  let newLat = null, newLng = null;
+  let hasManual = false;
+
+  if (latEl && lngEl){
+    const latV = String(latEl.value).trim().replace(',', '.');
+    const lngV = String(lngEl.value).trim().replace(',', '.');
+
+    if (latV !== '' && lngV !== ''){
+      const lat = parseFloat(latV);
+      const lng = parseFloat(lngV);
+      if (!isFinite(lat) || !isFinite(lng) ||
+          Math.abs(lat) > 90 || Math.abs(lng) > 180){
+        alert('Некорректные координаты. Широта: -90..90, долгота: -180..180.');
+        return;
+      }
+      newLat = lat;
+      newLng = lng;
+      hasManual = true;
+    }
+  }
+
+  if (!hasManual){
+    const latlng = marker.getLatLng();
+    newLat = latlng.lat;
+    newLng = latlng.lng;
+  }
+
+  o.lat = newLat;
+  o.lng = newLng;
+  marker.setLatLng([newLat, newLng]);
+
+  const key = gponGeoKeyForOnu(o);
+  G.geo.set(key, { lat: newLat, lng: newLng, address: o.address });
+
+  try {
+    const res = await fetch('/gpon/geo/point', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        addr: key,
+        lat: newLat,
+        lng: newLng,
+        address: o.address,
+      }),
+    });
+    if (!res.ok){
+      console.warn('server returned', res.status);
+    }
+  } catch(e){
+    console.warn('save geo point failed', e);
+  }
+
+  if (marker.dragging) marker.dragging.disable();
+  marker.setZIndexOffset(0);
+  marker._editModeActive = false;
+
+  marker.off('drag');
+  marker.off('dragend');
+
+  const el = marker.getElement();
+  if (el) el.classList.remove('editable');
+  G.editMode = null;
+  gponHideEditHint();
+
+  marker.closePopup();
+  gponBindPopup(marker);
+  gponUpdateStats();
+}
+
+function gponCancelEditMarker(marker){
+  if (!G.editMode) return;
+  const o = marker.__onu;
+  const { originalLat, originalLng } = G.editMode;
+
+  o.lat = originalLat;
+  o.lng = originalLng;
+  marker.setLatLng([originalLat, originalLng]);
+
+  if (marker.dragging) marker.dragging.disable();
+  marker.setZIndexOffset(0);
+  marker._editModeActive = false;
+
+  marker.off('drag');
+  marker.off('dragend');
+
+  const el = marker.getElement();
+  if (el) el.classList.remove('editable');
+  G.editMode = null;
+  gponHideEditHint();
+
+  marker.closePopup();
+  gponBindPopup(marker);
+}
+
+function gponShowEditHint(text){
+  const el = $('editHint');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+function gponHideEditHint(){
+  const el = $('editHint');
+  if (el) el.classList.add('hidden');
+}
+
+/* ---------- Установка координат для ONU без координат ---------- */
+function gponStartSetCoord(onuId){
+  const o = G.onus.find(x => x.id === onuId);
+  if (!o) return;
+  G.editMode = { type: 'set', onuId };
+  gponShowEditHint('Кликните по карте, чтобы указать координаты для ONU ' + (o.login || o.id));
+}
+
+function gponHandleMapClickForSet(latlng){
+  if (!G.editMode || G.editMode.type !== 'set') return;
+  const o = G.onus.find(x => x.id === G.editMode.onuId);
+  if (!o) return;
+
+  o.lat = latlng.lat;
+  o.lng = latlng.lng;
+
+  const key = gponGeoKeyForOnu(o);
+  G.geo.set(key, { lat: latlng.lat, lng: latlng.lng, address: o.address });
+
+  fetch('/gpon/geo/point', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ addr: key, lat: latlng.lat, lng: latlng.lng, address: o.address }),
+  }).catch(e => console.warn('save geo point failed', e));
+
+  G.editMode = null;
+  gponHideEditHint();
+
+  gponBuildLayers();
+  gponRebuildNogeoList();
+  gponUpdateStats();
+}
+
+/* ---------- Список ONU без координат ---------- */
+function gponRebuildNogeoList(){
+  const el = $('gpon-nogeo-list');
+  const cnt = $('nogeo-count');
+  if (!el) return;
+
+  const noGeo = G.onus.filter(o => o.lat == null || o.lng == null);
+  if (cnt) cnt.textContent = noGeo.length ? `(${noGeo.length})` : '';
+
+  if (!noGeo.length){
+    el.innerHTML = '<div style="padding:6px 8px;color:var(--muted);font-size:12px">Все ONU имеют координаты 🎉</div>';
+    return;
+  }
+
+  const shown = noGeo.slice(0, 200);
+  const frag = document.createDocumentFragment();
+  for (const o of shown){
+    const row = document.createElement('div');
+    row.className = 'gpon-nogeo-item';
+    row.innerHTML = `
+      <span class="addr" title="${esc(o.address)} — ${esc(o.login)}">${esc(o.address)}</span>
+      <button data-onu="${esc(o.id)}">📍</button>`;
+    row.querySelector('button').onclick = () => gponStartSetCoord(o.id);
+    frag.appendChild(row);
+  }
+  if (noGeo.length > 200){
+    const more = document.createElement('div');
+    more.className = 'gpon-nogeo-item';
+    more.innerHTML = `<span class="addr" style="color:var(--muted)">… и ещё ${noGeo.length - 200}</span>`;
+    frag.appendChild(more);
+  }
+  el.replaceChildren(frag);
 }
 
 /* ==========================================================================
