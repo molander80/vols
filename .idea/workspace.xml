@@ -4,9 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat(export): кнопка «Выгрузить дерево» — зеркало маршрутов в uploads/tree/&#10;&#10;По кнопке в KMZ-топбаре дерево маршрутов выгружается на диск в&#10;uploads/tree/&lt;folder...&gt;/&lt;branch или name&gt;.kmz и отдаётся клиенту&#10;как routes_tree.zip. При каждой выгрузке uploads/tree/ полностью&#10;очищается, чтобы не оставалось старых переименованных файлов.&#10;state.json остаётся источником правды — выгрузка односторонняя.&#10;&#10;app.py&#10;  * Новый роут POST /export_tree.&#10;    - Тело (JSON, необязательное): { &quot;only_visible&quot;: true|false }&#10;    - Перед записью shutil.rmtree(uploads/tree), затем создаёт заново.&#10;    - Каждый маршрут пишется как отдельный KMZ:&#10;      &lt;folder1&gt;/&lt;folder2&gt;/.../&lt;branch или name&gt;.kmz&#10;    - Защита от коллизий имён: foo.kmz → foo__2.kmz, foo__3.kmz, …&#10;    - Упаковывает uploads/tree/ в ZIP (ZIP_DEFLATED), отдаёт&#10;      как routes_tree.zip.&#10;  * Хелперы:&#10;    - _safe_name(s) — экранирование символов &lt; &gt; : &quot; / \ | ? *,&#10;      обрезка точек/пробелов в конце, защита резервных имён Windows&#10;      (CON, PRN, AUX, NUL, COM1..COM9, LPT1..LPT9) префиксом '_'.&#10;    - _tree_route_relative_path(r) — строит относительный путь из&#10;      r.folder и r.branch/r.name.&#10;    - _write_route_kmz_to_file(r, path) — простой KMZ через simplekml.&#10;  * Импорты: добавлены re и shutil.&#10;&#10;index.html&#10;  * Новая кнопка #btnExportTree «📥 Выгрузить дерево» в kmzControls&#10;    рядом с 💾 KMZ, с tooltip о месте сохранения.&#10;  * Обработчик кнопки:&#10;    - Если дерево пустое — alert и выход.&#10;    - confirm: «только видимые (N шт.)» или «все (M шт.)».&#10;    - Кнопка блокируется, текст меняется на «⏳ Собираю…».&#10;    - POST /export_tree с { only_visible }, скачивание ZIP через&#10;      Blob + URL.createObjectURL.&#10;    - Ошибки HTTP и сети выводятся в alert, кнопка возвращается&#10;      в исходное состояние.&#10;  * CSS: добавлено .btn:disabled { opacity:.6; cursor:default }&#10;    для визуального состояния заблокированной кнопки.&#10;&#10;requirements.txt не менялся.&#10;&#10;Файлы: app.py, index.html">
+    <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat(gpon): ручное редактирование координат ONU, привязка по клику на маршрут, автофокус&#10;&#10;Крупные улучшения GPON-редактирования и связки KMZ ↔ GPON.&#10;Логика редактирования меток полностью переработана: маркер больше&#10;не «убегает» при вводе координат, попап управляется через&#10;делегирование кликов, чтобы кнопки работали стабильно.&#10;&#10;app.py&#10;  * Новый роут POST /gpon/geo/point — точечное сохранение одной&#10;    координаты geo по нормализованному адресу, с debounce-записью&#10;    gpon_state.json (0.8 с) как и остальные GPON-изменения.&#10;    Тело: { addr, lat, lng, address }. Ответ: { ok, addr, lat, lng }.&#10;&#10;index.html&#10;  * Связка KMZ ↔ GPON переведена с папок на конкретные маршруты:&#10;    - в hover-меню маршрута кнопка 🔗 вызывает kmzLinkRoute(r.id);&#10;    - клик по линии маршрута на карте теперь автоматически&#10;      привязывает его к GPON (без отдельной кнопки);&#10;    - повторный клик по линии / клик по пустому месту / ✕ в бейдже&#10;      — снимают связку и восстанавливают видимость всех маршрутов.&#10;&#10;  * При установке связки:&#10;    - остаётся только выбранный KMZ-маршрут;&#10;    - GPON-слой фильтруется по gponBranchMatchesKmz(o.branch, key);&#10;    - дерево сворачивается до маршрута (kmzCollapseExceptRoute),&#10;      маршрут подсвечен оранжевым;&#10;    - карта перелетает к линии + меткам (kmzFitToLinkedRoute);&#10;    - обновляется бейдж «Связка: …».&#10;&#10;  * Редактирование геометок ONU (gponStartEditMarker):&#10;    - в попапе два поля: Широта / Долгота с текущими значениями;&#10;    - ввод в поля НЕ двигает маркер — позиция применяется только&#10;      по кнопке «✓ Сохранить»;&#10;    - кнопки «✓ Сохранить» / «↺ Отменить» обрабатываются через&#10;      делегирование кликов на контейнере попапа (popupopen +&#10;      addEventListener), чтобы избежать багов с переоткрытием;&#10;    - drag маркера обновляет значения в полях (обратная синхронизация);&#10;    - сохранение отправляет POST /gpon/geo/point с выбранными&#10;      координатами (приоритет у полей; если пусты — позиция маркера);&#10;    - валидация: широта -90..90, долгота -180..180, иначе alert;&#10;    - «↺ Отменить» возвращает маркер на исходную позицию.&#10;&#10;  * Кнопка «📌 Перетащить» в обычном попапе ONU — единая точка&#10;    входа в edit-режим (как для существующих, так и для новых координат).&#10;&#10;  * Панель «Без координат (N)» слева в GPON-режиме:&#10;    - список ONU без lat/lng (до 200 строк);&#10;    - кнопка 📍 включает режим «клик по карте → указать место»;&#10;    - после клика координата сохраняется через /gpon/geo/point,&#10;      метка появляется на карте, список обновляется.&#10;&#10;  * Удалены все упоминания K.isolation и isoBadge — вместо них&#10;    используется K.linked и linkBadge. Поведение изоляции совмещено&#10;    со связкой, чтобы не было двух конкурирующих режимов.&#10;&#10;  * kmzFitToLinkedRoute() — fitBounds по точкам KMZ-маршрута&#10;    и координатам GPON-меток, попавших под фильтр связки.&#10;    Вызывается сразу после установки связки + повторно через 150 мс&#10;    (chunkedLoading маркеров).&#10;&#10;  * kmzRestoreIsolationIfLinked() — восстанавливает visible&#10;    из K.isolationPrev, синхронизирует чекбоксы в дереве,&#10;    батчем возвращает visible=true для ранее видимых.&#10;&#10;  * CSS: .folder-row.linked / .route-row.linked — оранжевая&#10;    подсветка связанной папки/маршрута; .onu-marker.editable —&#10;    пульсация редактируемой метки; .onu-edit-popup input — стили&#10;    для полей Широта/Долгота.&#10;&#10;  * favicon 404 закрыт через &lt;link rel=&quot;icon&quot; href=&quot;data:,&quot;&gt;.&#10;&#10;Файлы: app.py, index.html">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/gpon_state.json" beforeDir="false" afterPath="$PROJECT_DIR$/data/gpon_state.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/data/state.json" beforeDir="false" afterPath="$PROJECT_DIR$/data/state.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/templates/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/templates/index.html" afterDir="false" />
     </list>
@@ -18,7 +18,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="main" />
+        <entry key="$PROJECT_DIR$" value="Part-Two" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -48,7 +48,7 @@
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;Part-Two&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
     &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;
   }
 }</component>
@@ -77,6 +77,7 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.app" />
         <item itemvalue="Python.app" />
       </list>
     </recent_temporary>
@@ -190,7 +191,7 @@
                   <entry key="branch">
                     <value>
                       <list>
-                        <option value="Part-Two" />
+                        <option value="main" />
                       </list>
                     </value>
                   </entry>
