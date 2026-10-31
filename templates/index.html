@@ -335,6 +335,7 @@ button,input,select{font:inherit;color:inherit}
 
     <input class="input" id="search" placeholder="🔎 Поиск…">
     <button class="btn icon" id="theme" title="Тема">🌙</button>
+    <button class="btn icon" id="btnMarkersVis" title="Скрыть GPON-метки">👁️</button>
 
     <div class="iso-badge hidden" id="linkBadge" title="Связка KMZ ↔ GPON">
       <span id="linkBadgeText"></span>
@@ -379,114 +380,125 @@ button,input,select{font:inherit;color:inherit}
 'use strict';
 
 /* ==========================================================================
-   УТИЛИТЫ
+   CONSTANTS
    ========================================================================== */
-const $ = id => document.getElementById(id);
-const esc = s => (s||'').replace(/[&<>"']/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const ACT = { SAVE: 'save', CANCEL: 'cancel', LINK: 'link-gpon' };
+const CLS = {
+  EDITABLE: 'editable',
+  HIGHLIGHT: 'highlighted',
+  LINKED: 'linked',
+  BRANCH_HIGHLIGHT: 'branch-highlight',
+  BRANCH_HIGHLIGHT_LINKED: 'branch-highlight-linked',
+};
 
-function patchRoute(id, patch){
-  return fetch(`/route/${id}`, {
-    method:'PATCH', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(patch),
-  }).catch(err => console.error('PATCH failed', id, err));
-}
-
-function patchRoutesBulk(ids, patch){
-  if (!ids || !ids.length) return Promise.resolve();
-  return fetch('/routes/bulk', {
-    method:'PATCH',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ ids, patch }),
-  }).catch(err => console.warn('bulk patch failed', err));
-}
-
-const stripBOM = s => s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+const GPON_STATUS_COLOR = {
+  active: '#22c55e', off: '#94a3b8', block: '#ef4444', other: '#22c55e',
+};
+const GPON_STATUS_CLASS = {
+  active: 'stat-active', off: 'stat-off', block: 'stat-block', other: '',
+};
 
 /* ==========================================================================
-   КАРТА
+   HELPERS
    ========================================================================== */
-const map = L.map('map', { preferCanvas:true, zoomControl:true }).setView([45.3,38.1], 6);
+const $ = id => document.getElementById(id);
+const esc = s => (s || '').replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const stripBOM = s => s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
 
-const basemaps = {
-  'OSM DE': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', { maxZoom:19 }),
-  'Esri Улицы': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom:19 }),
-  'Esri Спутник': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom:19 }),
-  'Esri Топо': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom:19 }),
-  'Carto Светлая': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom:19, subdomains:'abcd' }),
-  'Carto Тёмная': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19, subdomains:'abcd' }),
+const patchRoute = (id, patch) =>
+  fetch(`/route/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(err => console.error('PATCH failed', id, err));
+
+const patchRoutesBulk = (ids, patch) => {
+  if (!ids || !ids.length) return Promise.resolve();
+  return fetch('/routes/bulk', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, patch }),
+  }).catch(err => console.warn('bulk patch failed', err));
 };
-basemaps['OSM DE'].addTo(map);
-L.control.layers(basemaps, null, { position:'topright', collapsed:false }).addTo(map);
 
 /* ==========================================================================
    STATE
    ========================================================================== */
-const State = {
-  mode: 'kmz',
-  kmz: {
-    routes: [],
-    layers: new Map(),
-    hiddenBranches: new Set(),
-    mergeMarked: new Set(),
-    isolationPrev: null,
-    customFolders: new Set(),
-    dragPayload: null,
-    search: '',
-    linked: null,
-  },
-  gpon: {
-    geo: new Map(),
-    onus: [],
-    byBranch: new Map(),
-    filters: { status: new Set(), branch: new Set() },
-    branchLayers: {},
-    allMarkers: [],
-    searchMode: false,
-    searchHighlightLayer: null,
-    geoFiles: [],
-    vgFile: '',
-    editMode: null,
-    nogeoLayer: null,
-  },
+const K = {
+  routes: [],
+  layers: new Map(),
+  hiddenBranches: new Set(),
+  mergeMarked: new Set(),
+  isolationPrev: null,
+  customFolders: new Set(),
+  dragPayload: null,
+  search: '',
+  linked: null,
 };
 
-const K = State.kmz;
-const G = State.gpon;
+const G = {
+  geo: new Map(),
+  onus: [],
+  byBranch: new Map(),
+  filters: { status: new Set(), branch: new Set() },
+  branchLayers: {},
+  allMarkers: [],
+  searchMode: false,
+  searchHighlightLayer: null,
+  geoFiles: [],
+  vgFile: '',
+  editMode: null,
+  markersVisible: true,
+};
 
 /* ==========================================================================
-   ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМОВ
+   MAP
+   ========================================================================== */
+const map = L.map('map', { preferCanvas: true, zoomControl: true }).setView([45.3, 38.1], 6);
+
+const basemaps = {
+  'OSM DE': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', { maxZoom: 19 }),
+  'Esri Улицы': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+  'Esri Спутник': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+  'Esri Топо': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+  'Carto Светлая': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }),
+  'Carto Тёмная': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }),
+};
+basemaps['OSM DE'].addTo(map);
+L.control.layers(basemaps, null, { position: 'topright', collapsed: false }).addTo(map);
+
+let __curPopup = null;
+
+/* ==========================================================================
+   MODE SWITCH
    ========================================================================== */
 function setMode(mode){
   if (mode !== 'kmz' && mode !== 'gpon') return;
-  State.mode = mode;
 
   document.querySelectorAll('.mode-switch button').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === mode);
   });
 
-  $('kmzControls').style.display  = (mode === 'kmz')  ? 'flex' : 'none';
-  $('gponControls').style.display = (mode === 'gpon') ? 'flex' : 'none';
-
-  $('sidebarKmz').classList.toggle('hidden', mode !== 'kmz');
-  $('sidebarGpon').classList.toggle('hidden', mode !== 'gpon');
-
-  $('statKmz').classList.toggle('hidden', mode !== 'kmz');
-  $('statGpon').classList.toggle('hidden', mode !== 'gpon');
-
-  $('search').placeholder = mode === 'kmz'
+  const isKmz = mode === 'kmz';
+  $('kmzControls').style.display = isKmz ? 'flex' : 'none';
+  $('gponControls').style.display = isKmz ? 'none' : 'flex';
+  $('sidebarKmz').classList.toggle('hidden', !isKmz);
+  $('sidebarGpon').classList.toggle('hidden', isKmz);
+  $('statKmz').classList.toggle('hidden', !isKmz);
+  $('statGpon').classList.toggle('hidden', isKmz);
+  $('search').placeholder = isKmz
     ? '🔎 Поиск по имени, ветке, папке…'
     : '🔎 Поиск: адрес, логин, ID, ветка…';
 
-  if (mode === 'kmz'){
+  if (isKmz){
     kmzRenderTree();
     kmzApplyFilters();
     $('s-routes').textContent = K.routes.length;
   } else {
     gponUpdateStats();
   }
-
   kmzUpdateLinkBadge();
 }
 
@@ -495,31 +507,33 @@ document.querySelectorAll('.mode-switch button').forEach(b => {
 });
 
 /* ==========================================================================
-   KMZ — слои
+   KMZ — LAYERS
    ========================================================================== */
+const _simplifiedCache = new WeakMap();
+
 function kmzStringToColor(str){
-  let h = 0; for (let i=0;i<str.length;i++) h = (h*31 + str.charCodeAt(i)) | 0;
-  return `hsl(${Math.abs(h)%360}, 70%, 45%)`;
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return `hsl(${Math.abs(h) % 360}, 70%, 45%)`;
 }
 
-function kmzSimplify(points, minDist=3){
+function kmzSimplify(points, minDist = 3){
   if (points.length < 3) return points;
   const out = [points[0]];
-  const R = 6371000, toRad = Math.PI/180;
+  const R = 6371000, toRad = Math.PI / 180;
   let lastLat = points[0][0], lastLon = points[0][1];
-  for (let i=1; i<points.length-1; i++){
+  for (let i = 1; i < points.length - 1; i++){
     const [lat, lon] = points[i];
-    const dLat = (lat-lastLat)*toRad;
-    const dLon = (lon-lastLon)*toRad;
-    const a = Math.sin(dLat/2)**2 + Math.cos(lastLat*toRad)*Math.cos(lat*toRad)*Math.sin(dLon/2)**2;
-    const d = 2*R*Math.asin(Math.sqrt(a));
+    const dLat = (lat - lastLat) * toRad;
+    const dLon = (lon - lastLon) * toRad;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lastLat * toRad) * Math.cos(lat * toRad) * Math.sin(dLon / 2) ** 2;
+    const d = 2 * R * Math.asin(Math.sqrt(a));
     if (d >= minDist){ out.push([lat, lon]); lastLat = lat; lastLon = lon; }
   }
-  out.push(points[points.length-1]);
+  out.push(points[points.length - 1]);
   return out;
 }
-
-const _simplifiedCache = new WeakMap();
 
 function kmzGetSimplifiedPoints(r){
   let pts = _simplifiedCache.get(r);
@@ -535,37 +549,22 @@ function kmzBuildLayer(r){
   const color = kmzStringToColor(r.branch || r.name);
 
   const halo = L.polyline(pts, {
-    color:'#ffffff', weight:7, opacity:.75,
-    lineCap:'round', lineJoin:'round', interactive:false,
+    color: '#ffffff', weight: 7, opacity: .75,
+    lineCap: 'round', lineJoin: 'round', interactive: false,
   });
   const line = L.polyline(pts, {
-    color, weight:3.5, opacity:.95,
-    lineCap:'round', lineJoin:'round',
+    color, weight: 3.5, opacity: .95,
+    lineCap: 'round', lineJoin: 'round',
   });
 
   line.on('click', (e) => {
     L.DomEvent.stopPropagation(e);
-    if (K.linked && K.linked.id === r.id){
-      kmzClearLink();
-    } else {
-      kmzLinkRoute(r.id);
-    }
+    if (K.linked && K.linked.id === r.id) kmzClearLink();
+    else kmzLinkRoute(r.id);
   });
-  line.bindTooltip(r.name, { sticky:true });
+  line.bindTooltip(r.name, { sticky: true });
 
   return L.layerGroup([halo, line]);
-}
-
-function kmzRebuildLayers(){
-  for (const [, layer] of K.layers) map.removeLayer(layer);
-  K.layers.clear();
-  for (const r of K.routes){
-    const layer = kmzBuildLayer(r);
-    K.layers.set(r.id, layer);
-    layer.addTo(map);
-  }
-  kmzApplyFilters();
-  kmzFitAll();
 }
 
 function kmzRemoveLayer(rid){
@@ -589,44 +588,37 @@ function kmzAddLayersFor(routes){
 
 function kmzFitAll(){
   if (K.linked) return;
-  const all = [];
+  const bounds = [];
   for (const layer of K.layers.values()){
-    const ls = layer.getLayers ? layer.getLayers() : [layer];
-    for (const l of ls){
-      if (l.getLatLngs){
-        try { all.push(...l.getLatLngs()); } catch(_){}
-      }
-    }
+    try {
+      const b = layer.getBounds?.();
+      if (b && b.isValid()) bounds.push(b);
+    } catch(_) {}
   }
-  if (all.length){
-    try { map.fitBounds(L.latLngBounds(all), { padding:[30,30] }); } catch(_){}
-  }
+  if (!bounds.length) return;
+  const merged = bounds.reduce((acc, b) => acc.extend(b), bounds[0]);
+  try { map.fitBounds(merged, { padding: [30, 30] }); } catch(_) {}
 }
 
 function kmzFitToLinkedRoute(){
-  const link = K.linked;
-  if (!link) return;
-
+  if (!K.linked) return;
   const pts = [];
-  const r = K.routes.find(x => x.id === link.id);
-  if (r && r.points && r.points.length){
-    for (const p of r.points) pts.push([p[0], p[1]]);
-  }
 
-  const key = link.key;
-  const fs  = G.filters.status;
-  const activeStatusFilter = fs.size > 0;
+  const r = K.routes.find(x => x.id === K.linked.id);
+  if (r?.points?.length) pts.push(...r.points);
+
+  const key = K.linked.key;
+  const activeStatus = G.filters.status.size > 0;
   for (const o of G.onus){
     if (o.lat == null || o.lng == null) continue;
-    if (activeStatusFilter && !fs.has(o._statusKey)) continue;
+    if (activeStatus && !G.filters.status.has(o._statusKey)) continue;
     if (!gponBranchMatchesKmz(o.branch, key)) continue;
     pts.push([o.lat, o.lng]);
   }
-
   if (!pts.length) return;
-  try {
-    map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 17 });
-  } catch(_){}
+
+  try { map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 17 }); }
+  catch(_) {}
 }
 
 function kmzApplyFilters(){
@@ -637,18 +629,15 @@ function kmzApplyFilters(){
 
     let visible = r.visible;
     if (r.branch && K.hiddenBranches.has(r.branch)) visible = false;
-    if (q){
-      const hay = `${r.name} ${r.branch||''} ${r.folder||''}`.toLowerCase();
-      if (!hay.includes(q)) visible = false;
-    }
+    if (q && !`${r.name} ${r.branch || ''} ${r.folder || ''}`.toLowerCase().includes(q)) visible = false;
 
-    if (visible){ if (!map.hasLayer(layer)) layer.addTo(map); }
-    else        { if (map.hasLayer(layer)) map.removeLayer(layer); }
+    if (visible && !map.hasLayer(layer)) layer.addTo(map);
+    if (!visible && map.hasLayer(layer)) map.removeLayer(layer);
   }
 }
 
 /* ==========================================================================
-   KMZ — дерево: сворачивание, раскрытие пути, подсветка
+   KMZ — TREE
    ========================================================================== */
 function kmzCollapseAllFolders(){
   const tree = $('folderTree');
@@ -657,52 +646,23 @@ function kmzCollapseAllFolders(){
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
 }
 
-function kmzExpandPathTo(folderPath, routeId){
-  kmzCollapseAllFolders();
-  const tree = $('folderTree');
-  if (!tree) return;
-
-  const parts = (folderPath || '').split('/').filter(Boolean);
-  let container = tree;
-
-  for (const part of parts){
-    let found = null;
-    for (const row of container.querySelectorAll(':scope > .folder-row')){
-      const nameSpan = row.querySelector('.folder-name');
-      if (nameSpan && nameSpan.textContent === part){ found = row; break; }
-    }
-    if (!found) break;
-
-    const children = found.nextElementSibling;
-    if (children && children.classList.contains('folder-children')){
-      children.classList.remove('collapsed');
-      const toggle = found.querySelector('.folder-toggle');
-      if (toggle) toggle.textContent = '▾';
-      container = children;
-    } else break;
-  }
-
-  if (routeId != null) kmzHighlightRoute(routeId);
-}
-
 function kmzCollapseExceptRoute(routeId){
   const tree = $('folderTree');
   if (!tree) return;
 
   tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.add('collapsed'));
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
-  tree.querySelectorAll('.folder-row.linked').forEach(r => r.classList.remove('linked'));
-  tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove('linked'));
+  tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove(CLS.LINKED));
 
   const row = tree.querySelector(`.route-row[data-id="${routeId}"]`);
   if (!row) return;
 
   let p = row.parentElement;
   while (p && p !== tree){
-    if (p.classList && p.classList.contains('folder-children')){
+    if (p.classList?.contains('folder-children')){
       p.classList.remove('collapsed');
       const prev = p.previousElementSibling;
-      if (prev && prev.classList.contains('folder-row')){
+      if (prev?.classList.contains('folder-row')){
         const toggle = prev.querySelector('.folder-toggle');
         if (toggle) toggle.textContent = '▾';
       }
@@ -710,75 +670,25 @@ function kmzCollapseExceptRoute(routeId){
     p = p.parentElement;
   }
 
-  row.classList.add('linked');
-  try { row.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
-}
-
-function kmzHighlightRoute(routeId){
-  const tree = $('folderTree');
-  if (!tree) return;
-  tree.querySelectorAll('.route-row.highlighted')
-      .forEach(el => el.classList.remove('highlighted'));
-  const row = tree.querySelector(`.route-row[data-id="${routeId}"]`);
-  if (!row) return;
-  row.classList.add('highlighted');
-  try { row.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
-  clearTimeout(kmzHighlightRoute._t);
-  kmzHighlightRoute._t = setTimeout(() => row.classList.remove('highlighted'), 2000);
+  row.classList.add(CLS.LINKED);
+  try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(_) {}
 }
 
 /* ==========================================================================
-   KMZ — восстановление галочек
-   ========================================================================== */
-function kmzRestoreIsolationIfLinked(){
-  const prev = K.isolationPrev || {};
-  const toShow = [];
-  for (const rr of K.routes){
-    const wasVisible = !!prev[rr.id];
-    if (rr.visible !== wasVisible){
-      rr.visible = wasVisible;
-    }
-    if (wasVisible) toShow.push(rr.id);
-  }
-  K.isolationPrev = null;
-  kmzApplyFilters();
-  kmzUpdateAllTreeCheckboxes();
-  if (toShow.length){
-    patchRoutesBulk(toShow, { visible: true });
-  }
-}
-
-map.on('click', (e) => {
-  if (G.editMode && G.editMode.type === 'set'){
-    L.DomEvent.stopPropagation(e);
-    gponHandleMapClickForSet(e.latlng);
-    return;
-  }
-
-  if (__curPopup){ __curPopup.closePopup(); __curPopup = null; }
-  const stopped = e.originalEvent && e.originalEvent._stopped;
-
-  if (!stopped && K.linked){
-    kmzClearLink();
-  }
-  if (!stopped) gponClearBranchHighlight();
-});
-
-/* ==========================================================================
-   KMZ — дерево (рендер)
+   KMZ — RENDER TREE
    ========================================================================== */
 function kmzBuildTree(){
-  const root = { name:'', children:new Map(), routes:[] };
+  const root = { name: '', children: new Map(), routes: [] };
   const ensure = (parts) => {
     let n = root;
     for (const p of parts){
       if (!p) continue;
-      if (!n.children.has(p)) n.children.set(p, { name:p, children:new Map(), routes:[] });
+      if (!n.children.has(p)) n.children.set(p, { name: p, children: new Map(), routes: [] });
       n = n.children.get(p);
     }
     return n;
   };
-  for (const r of K.routes) ensure((r.folder||'').split('/').filter(Boolean)).routes.push(r);
+  for (const r of K.routes) ensure((r.folder || '').split('/').filter(Boolean)).routes.push(r);
   for (const p of K.customFolders) ensure(p.split('/').filter(Boolean));
   return root;
 }
@@ -795,10 +705,10 @@ function kmzRenderTree(){
   c.innerHTML = '';
   kmzRenderNode(kmzBuildTree(), c, [], true);
 
-  if (K.linked && K.linked.type === 'route'){
+  if (K.linked?.type === 'route'){
     kmzCollapseExceptRoute(K.linked.id);
     setTimeout(() => {
-      if (K.linked && K.linked.type === 'route') kmzCollapseExceptRoute(K.linked.id);
+      if (K.linked?.type === 'route') kmzCollapseExceptRoute(K.linked.id);
     }, 0);
   }
 }
@@ -808,97 +718,8 @@ function kmzRenderNode(node, container, parts, isRoot){
   const pathStr = path.join('/');
 
   if (!isRoot && node.name){
-    const row = document.createElement('div');
-    row.className = 'folder-row';
-    row.dataset.folderPath = pathStr;
-    row.draggable = true;
-
-    const routes = kmzCollectRoutes(node);
-    const total = routes.length;
-    let visible = 0;
-    for (const r of routes){
-      const hb = r.branch && K.hiddenBranches.has(r.branch);
-      if (r.visible && !hb) visible++;
-    }
-
-    row.addEventListener('dragover', kmzFolderDragOver);
-    row.addEventListener('dragleave', e => e.currentTarget.classList.remove('drop-target'));
-    row.addEventListener('drop', kmzFolderDrop);
-    row.addEventListener('dragstart', e => {
-      K.dragPayload = { type:'folder', path:pathStr };
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    row.addEventListener('dragend', () => { K.dragPayload = null; });
-
-    const toggle = document.createElement('span');
-    toggle.className = 'folder-toggle';
-    toggle.textContent = '▾';
-    toggle.onclick = e => {
-      e.stopPropagation();
-      const ch = row.nextElementSibling;
-      if (ch && ch.classList.contains('folder-children')){
-        ch.classList.toggle('collapsed');
-        toggle.textContent = ch.classList.contains('collapsed') ? '▸' : '▾';
-      }
-    };
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.className = 'folder-cb';
-    cb.checked = total > 0 && visible === total;
-    cb.indeterminate = visible > 0 && visible < total;
-    cb.disabled = total === 0;
-    cb.title = `${visible} из ${total} видимо`;
-
-    cb.addEventListener('mousedown', e => {
-      e.stopPropagation();
-      row.draggable = false;
-    });
-    cb.addEventListener('mouseup', e => {
-      e.stopPropagation();
-      row.draggable = true;
-    });
-    cb.addEventListener('pointerdown', e => e.stopPropagation());
-    cb.addEventListener('click', e => {
-      e.stopPropagation();
-      const want = cb.checked;
-      cb.indeterminate = false;
-      kmzSetFolderVisible(node, want);
-    });
-
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'folder-name';
-    nameSpan.textContent = node.name;
-    nameSpan.title = `${node.name} — ${visible}/${total}`;
-    nameSpan.onclick = e => { e.stopPropagation(); toggle.onclick(e); };
-
-    const cnt = document.createElement('span');
-    cnt.className = 'folder-count';
-    cnt.textContent = total ? `${visible}/${total}` : '';
-
-    const actions = document.createElement('span');
-    actions.className = 'folder-actions';
-    actions.innerHTML = `
-      <button data-act="rename-folder" title="Переименовать">✏️</button>
-      <button data-act="new-subfolder" title="Подпапка">📁+</button>
-      <button data-act="delete-folder" title="Удалить">🗑</button>`;
-    actions.querySelector('[data-act="rename-folder"]').onclick = e => { e.stopPropagation(); kmzRenameFolder(pathStr); };
-    actions.querySelector('[data-act="new-subfolder"]').onclick = e => {
-      e.stopPropagation();
-      const sub = prompt('Имя подпапки:');
-      if (!sub) return;
-      const full = `${pathStr}/${sub.trim()}`;
-      K.customFolders.add(full);
-      kmzFolderAdd(full);
-      kmzRenderTree();
-    };
-    actions.querySelector('[data-act="delete-folder"]').onclick = e => { e.stopPropagation(); kmzDeleteFolder(pathStr); };
-
-    row.append(toggle, cb, nameSpan, cnt, actions);
+    const { row, wrap } = makeFolderRow(node, pathStr);
     container.appendChild(row);
-
-    const wrap = document.createElement('div');
-    wrap.className = 'folder-children';
     container.appendChild(wrap);
     container = wrap;
   }
@@ -907,63 +728,87 @@ function kmzRenderNode(node, container, parts, isRoot){
   for (const r of node.routes) container.appendChild(kmzBuildRouteRow(r));
 }
 
-function kmzUpdateFolderCounts(){
-  const tree = $('folderTree');
-  if (!tree) return;
+function makeFolderRow(node, pathStr){
+  const row = document.createElement('div');
+  row.className = 'folder-row';
+  row.dataset.folderPath = pathStr;
+  row.draggable = true;
 
-  const folders = [...tree.querySelectorAll('.folder-row')].reverse();
-  for (const row of folders){
-    const children = row.nextElementSibling;
-    if (!children || !children.classList.contains('folder-children')) continue;
+  const routes = kmzCollectRoutes(node);
+  const total = routes.length;
+  const visible = routes.filter(r => r.visible && !(r.branch && K.hiddenBranches.has(r.branch))).length;
 
-    const routes = [];
-    const collectFrom = (container) => {
-      for (const child of container.children){
-        if (child.classList.contains('route-row')){
-          const rid = parseInt(child.dataset.id, 10);
-          const r = K.routes.find(x => x.id === rid);
-          if (r) routes.push(r);
-        } else if (child.classList.contains('folder-children')){
-          collectFrom(child);
-        }
-      }
-    };
-    collectFrom(children);
+  row.addEventListener('dragover', kmzFolderDragOver);
+  row.addEventListener('dragleave', e => e.currentTarget.classList.remove('drop-target'));
+  row.addEventListener('drop', kmzFolderDrop);
+  row.addEventListener('dragstart', e => {
+    K.dragPayload = { type: 'folder', path: pathStr };
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  row.addEventListener('dragend', () => { K.dragPayload = null; });
 
-    const total = routes.length;
-    let visible = 0;
-    for (const r of routes){
-      const hb = r.branch && K.hiddenBranches.has(r.branch);
-      if (r.visible && !hb) visible++;
+  const toggle = document.createElement('span');
+  toggle.className = 'folder-toggle';
+  toggle.textContent = '▾';
+  toggle.onclick = e => {
+    e.stopPropagation();
+    const ch = row.nextElementSibling;
+    if (ch?.classList.contains('folder-children')){
+      ch.classList.toggle('collapsed');
+      toggle.textContent = ch.classList.contains('collapsed') ? '▸' : '▾';
     }
+  };
 
-    const cnt = row.querySelector('.folder-count');
-    if (cnt) cnt.textContent = total ? `${visible}/${total}` : '';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'folder-cb';
+  cb.checked = total > 0 && visible === total;
+  cb.indeterminate = visible > 0 && visible < total;
+  cb.disabled = total === 0;
+  cb.title = `${visible} из ${total} видимо`;
+  cb.addEventListener('mousedown', e => { e.stopPropagation(); row.draggable = false; });
+  cb.addEventListener('mouseup', e => { e.stopPropagation(); row.draggable = true; });
+  cb.addEventListener('pointerdown', e => e.stopPropagation());
+  cb.addEventListener('click', e => {
+    e.stopPropagation();
+    cb.indeterminate = false;
+    kmzSetFolderVisible(node, cb.checked);
+  });
 
-    const fcb = row.querySelector('.folder-cb');
-    if (fcb){
-      fcb.checked = total > 0 && visible === total;
-      fcb.indeterminate = visible > 0 && visible < total;
-      fcb.title = `${visible} из ${total} видимо`;
-    }
-  }
-}
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'folder-name';
+  nameSpan.textContent = node.name;
+  nameSpan.title = `${node.name} — ${visible}/${total}`;
+  nameSpan.onclick = e => { e.stopPropagation(); toggle.onclick(e); };
 
-function kmzUpdateAllTreeCheckboxes(){
-  const tree = $('folderTree');
-  if (!tree) return;
+  const cnt = document.createElement('span');
+  cnt.className = 'folder-count';
+  cnt.textContent = total ? `${visible}/${total}` : '';
 
-  for (const row of tree.querySelectorAll('.route-row')){
-    const rid = parseInt(row.dataset.id, 10);
-    const rr = K.routes.find(x => x.id === rid);
-    if (!rr) continue;
-    const cb = row.querySelector('input[type="checkbox"]');
-    if (cb && cb.checked !== rr.visible){
-      cb.checked = rr.visible;
-    }
-  }
+  const actions = document.createElement('span');
+  actions.className = 'folder-actions';
+  actions.innerHTML = `
+    <button data-act="rename-folder" title="Переименовать">✏️</button>
+    <button data-act="new-subfolder" title="Подпапка">📁+</button>
+    <button data-act="delete-folder" title="Удалить">🗑</button>`;
+  actions.querySelector('[data-act="rename-folder"]').onclick = e => { e.stopPropagation(); kmzRenameFolder(pathStr); };
+  actions.querySelector('[data-act="new-subfolder"]').onclick = e => {
+    e.stopPropagation();
+    const sub = prompt('Имя подпапки:');
+    if (!sub) return;
+    const full = `${pathStr}/${sub.trim()}`;
+    K.customFolders.add(full);
+    kmzFolderAdd(full);
+    kmzRenderTree();
+  };
+  actions.querySelector('[data-act="delete-folder"]').onclick = e => { e.stopPropagation(); kmzDeleteFolder(pathStr); };
 
-  kmzUpdateFolderCounts();
+  row.append(toggle, cb, nameSpan, cnt, actions);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'folder-children';
+
+  return { row, wrap };
 }
 
 function kmzBuildRouteRow(r){
@@ -973,7 +818,7 @@ function kmzBuildRouteRow(r){
   li.draggable = true;
 
   li.addEventListener('dragstart', e => {
-    K.dragPayload = { type:'route', id:r.id };
+    K.dragPayload = { type: 'route', id: r.id };
     e.dataTransfer.effectAllowed = 'move';
     li.classList.add('dragging');
   });
@@ -986,41 +831,29 @@ function kmzBuildRouteRow(r){
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = r.visible;
-
-  cb.addEventListener('mousedown', e => {
-    e.stopPropagation();
-    li.draggable = false;
-  });
-  cb.addEventListener('mouseup', e => {
-    e.stopPropagation();
-    li.draggable = true;
-  });
+  cb.addEventListener('mousedown', e => { e.stopPropagation(); li.draggable = false; });
+  cb.addEventListener('mouseup', e => { e.stopPropagation(); li.draggable = true; });
   cb.addEventListener('click', e => e.stopPropagation());
   cb.addEventListener('pointerdown', e => e.stopPropagation());
-
   cb.onchange = async () => {
     r.visible = cb.checked;
     kmzApplyFilters();
-    kmzUpdateFolderCounts();
     await patchRoute(r.id, { visible: r.visible });
   };
-
-  li.appendChild(cb);
 
   const nameSpan = document.createElement('span');
   nameSpan.className = 'route-name';
   nameSpan.textContent = r.name;
   nameSpan.title = `${r.name}${r.branch ? ' — ' + r.branch : ''}`;
-  li.appendChild(nameSpan);
 
   const actions = document.createElement('span');
   actions.className = 'route-actions';
   actions.innerHTML = `
-    <button data-act="link-gpon" title="Связать с GPON">🔗</button>
+    <button data-act="${ACT.LINK}" title="Связать с GPON">🔗</button>
     <button data-act="rename" title="Переименовать">✏️</button>
     <button data-act="merge" title="Отметить">${K.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
     <button data-act="delete" title="Удалить">✕</button>`;
-  actions.querySelector('[data-act="link-gpon"]').onclick = e => {
+  actions.querySelector(`[data-act="${ACT.LINK}"]`).onclick = e => {
     e.stopPropagation();
     kmzLinkRoute(r.id);
   };
@@ -1032,21 +865,20 @@ function kmzBuildRouteRow(r){
     kmzRenderTree();
   };
   actions.querySelector('[data-act="merge"]').onclick = () => {
-    if (K.mergeMarked.has(r.id)) K.mergeMarked.delete(r.id);
-    else K.mergeMarked.add(r.id);
+    K.mergeMarked.has(r.id) ? K.mergeMarked.delete(r.id) : K.mergeMarked.add(r.id);
     kmzRenderTree();
   };
   actions.querySelector('[data-act="delete"]').onclick = async () => {
     if (!confirm(`Удалить "${r.name}"?`)) return;
-    if (K.linked && K.linked.id === r.id) kmzClearLink();
-    await fetch(`/route/${r.id}`, { method:'DELETE' });
+    if (K.linked?.id === r.id) kmzClearLink();
+    await fetch(`/route/${r.id}`, { method: 'DELETE' });
     K.routes = K.routes.filter(x => x.id !== r.id);
     kmzRemoveLayer(r.id);
     kmzRenderTree();
     $('s-routes').textContent = K.routes.length;
   };
-  li.appendChild(actions);
 
+  li.append(cb, nameSpan, actions);
   if (K.mergeMarked.has(r.id)) li.classList.add('merge-marked');
   return li;
 }
@@ -1056,12 +888,15 @@ function kmzBuildRouteRow(r){
    ========================================================================== */
 function kmzFolderDragOver(e){
   if (!K.dragPayload) return;
-  e.preventDefault(); e.stopPropagation();
+  e.preventDefault();
+  e.stopPropagation();
   e.dataTransfer.dropEffect = 'move';
   e.currentTarget.classList.add('drop-target');
 }
+
 async function kmzFolderDrop(e){
-  e.preventDefault(); e.stopPropagation();
+  e.preventDefault();
+  e.stopPropagation();
   e.currentTarget.classList.remove('drop-target');
   const payload = K.dragPayload;
   if (!payload) return;
@@ -1084,7 +919,7 @@ async function kmzMoveRoutes(ids, folder){
   await patchRoutesBulk(affected.map(r => r.id), { folder });
 
   for (const old of oldFolders){
-    const still = K.routes.some(r => r.folder === old || (r.folder||'').startsWith(old + '/'));
+    const still = K.routes.some(r => r.folder === old || (r.folder || '').startsWith(old + '/'));
     if (!still && K.customFolders.has(old)){
       K.customFolders.delete(old);
       kmzFolderDelete(old);
@@ -1097,8 +932,8 @@ async function kmzMoveFolder(src, dst){
   const base = src.split('/').pop();
   const np = dst ? `${dst}/${base}` : base;
 
-  const affected = K.routes.filter(r => r.folder === src || (r.folder||'').startsWith(src + '/'));
-  for (const r of affected) r.folder = np + (r.folder||'').slice(src.length);
+  const affected = K.routes.filter(r => r.folder === src || (r.folder || '').startsWith(src + '/'));
+  for (const r of affected) r.folder = np + (r.folder || '').slice(src.length);
 
   const upd = new Set();
   for (const f of K.customFolders){
@@ -1118,11 +953,11 @@ async function kmzRenameFolder(oldPath){
   const cur = oldPath.split('/').pop();
   const nn = prompt('Новое имя папки:', cur);
   if (!nn || nn === cur) return;
-  const parent = oldPath.split('/').slice(0,-1).join('/');
+  const parent = oldPath.split('/').slice(0, -1).join('/');
   const np = parent ? `${parent}/${nn.trim()}` : nn.trim();
 
-  const affected = K.routes.filter(r => r.folder === oldPath || (r.folder||'').startsWith(oldPath + '/'));
-  for (const r of affected) r.folder = np + (r.folder||'').slice(oldPath.length);
+  const affected = K.routes.filter(r => r.folder === oldPath || (r.folder || '').startsWith(oldPath + '/'));
+  for (const r of affected) r.folder = np + (r.folder || '').slice(oldPath.length);
 
   const upd = new Set();
   for (const f of K.customFolders){
@@ -1138,7 +973,7 @@ async function kmzRenameFolder(oldPath){
 }
 
 async function kmzDeleteFolder(path){
-  const affected = K.routes.filter(r => r.folder === path || (r.folder||'').startsWith(path + '/'));
+  const affected = K.routes.filter(r => r.folder === path || (r.folder || '').startsWith(path + '/'));
   if (affected.length && !confirm(`В папке "${path}" ${affected.length} маршрут(ов). Переместить в корень?`)) return;
 
   for (const r of affected) r.folder = '';
@@ -1156,8 +991,7 @@ function kmzSetFolderVisible(node, visible){
   for (const r of routes){
     r.visible = visible;
     if (r.branch){
-      if (visible) K.hiddenBranches.delete(r.branch);
-      else K.hiddenBranches.add(r.branch);
+      visible ? K.hiddenBranches.delete(r.branch) : K.hiddenBranches.add(r.branch);
     }
   }
   kmzApplyFilters();
@@ -1166,32 +1000,19 @@ function kmzSetFolderVisible(node, visible){
 }
 
 /* ==========================================================================
-   KMZ — API-помощники и загрузка
+   KMZ — API HELPERS + LOADING
    ========================================================================== */
-async function kmzFolderAdd(path){
-  try {
-    await fetch('/folders', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ path }),
-    });
-  } catch(e){ console.warn('folder add failed', e); }
-}
-async function kmzFolderDelete(path){
-  try {
-    await fetch('/folders', {
-      method:'DELETE', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ path }),
-    });
-  } catch(e){ console.warn('folder delete failed', e); }
-}
-async function kmzFolderRename(oldPath, newPath){
-  try {
-    await fetch('/folders/rename', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ old: oldPath, new: newPath }),
-    });
-  } catch(e){ console.warn('folder rename failed', e); }
-}
+const kmzFolderAdd = (path) =>
+  fetch('/folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) })
+    .catch(e => console.warn('folder add failed', e));
+
+const kmzFolderDelete = (path) =>
+  fetch('/folders', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) })
+    .catch(e => console.warn('folder delete failed', e));
+
+const kmzFolderRename = (oldPath, newPath) =>
+  fetch('/folders/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ old: oldPath, new: newPath }) })
+    .catch(e => console.warn('folder rename failed', e));
 
 async function kmzLoadRoutes(){
   const res = await fetch('/routes');
@@ -1219,15 +1040,13 @@ async function kmzLoadRoutes(){
 
   if (wasEmpty || addedCount > 0) kmzFitAll();
   kmzApplyFilters();
-
   $('s-routes').textContent = K.routes.length;
 }
 
 async function kmzLoadFolders(){
   try {
     const res = await fetch('/folders');
-    const list = await res.json();
-    K.customFolders = new Set(list);
+    K.customFolders = new Set(await res.json());
   } catch(e){ console.warn('folders load failed', e); }
 }
 
@@ -1238,12 +1057,12 @@ async function kmzUpload(files){
     fd.append('files[]', f, f.name);
     fd.append('paths[]', f.webkitRelativePath || f.name);
   }
-  await fetch('/upload', { method:'POST', body:fd });
+  await fetch('/upload', { method: 'POST', body: fd });
   await kmzLoadRoutes();
 }
 
 /* ==========================================================================
-   KMZ ↔ GPON: связка по конкретному маршруту
+   KMZ ↔ GPON LINK
    ========================================================================== */
 function gponBranchMatchesKmz(gponBranch, kmzKey){
   if (!gponBranch || !kmzKey) return false;
@@ -1256,56 +1075,53 @@ function gponBranchMatchesKmz(gponBranch, kmzKey){
   const gbParts = gb.split('/');
   const kkParts = kk.split('/');
   if (kkParts.length <= gbParts.length){
-    let match = true;
     for (let i = 0; i < kkParts.length; i++){
-      if (gbParts[gbParts.length - kkParts.length + i] !== kkParts[i]){
-        match = false; break;
-      }
+      if (gbParts[gbParts.length - kkParts.length + i] !== kkParts[i]) return false;
     }
-    if (match) return true;
+    return true;
   }
   return false;
 }
 
 function gponApplyKmzLinkFilter(){
-  const link = K.linked;
-  if (!link){
+  if (!G.markersVisible){
+    for (const k in G.branchLayers){
+      const c = G.branchLayers[k];
+      if (map.hasLayer(c)) map.removeLayer(c);
+    }
+    return;
+  }
+  if (!K.linked){
     gponApplyFilters();
     return;
   }
-  const key = link.key;
 
-  const fs = G.filters.status;
-  const activeStatusFilter = fs.size > 0;
-
+  const key = K.linked.key;
+  const activeStatus = G.filters.status.size > 0;
   const wanted = new Map();
+
   for (const m of G.allMarkers){
     const o = m.__onu;
     if (o.lat == null) continue;
-    if (activeStatusFilter && !fs.has(o._statusKey)) continue;
+    if (activeStatus && !G.filters.status.has(o._statusKey)) continue;
     if (!gponBranchMatchesKmz(o.branch, key)) continue;
-    let arr = wanted.get(o.branch);
-    if (!arr){ arr = []; wanted.set(o.branch, arr); }
-    arr.push(m);
+    (wanted.get(o.branch) ?? wanted.set(o.branch, []).get(o.branch)).push(m);
   }
 
   for (const branch in G.branchLayers){
     const cluster = G.branchLayers[branch];
     const arr = wanted.get(branch) || [];
     const has = arr.length > 0;
-    const on  = map.hasLayer(cluster);
+    const on = map.hasLayer(cluster);
 
     if (has && !on && !G.searchMode) cluster.addTo(map);
     if (!has && on) map.removeLayer(cluster);
-
     if (!has) continue;
 
     const cur = _clusterMembers.get(branch);
     if (cur && cur.size === arr.length){
       let same = true;
-      for (const m of arr){
-        if (!cur.has(m)){ same = false; break; }
-      }
+      for (const m of arr){ if (!cur.has(m)){ same = false; break; } }
       if (same) continue;
     }
     cluster.clearLayers();
@@ -1318,102 +1134,93 @@ function gponHighlightLinkedBranches(){
   const root = $('filter-branch-list');
   if (!root) return;
 
-  root.querySelectorAll('.filter-item.branch-highlight-linked')
-      .forEach(el => el.classList.remove('branch-highlight-linked'));
+  root.querySelectorAll(`.filter-item.${CLS.BRANCH_HIGHLIGHT_LINKED}`)
+      .forEach(el => el.classList.remove(CLS.BRANCH_HIGHLIGHT_LINKED));
 
-  const link = K.linked;
-  if (!link) return;
-  const key = link.key;
+  if (!K.linked) return;
 
+  const key = K.linked.key;
   for (const el of root.querySelectorAll('.filter-item')){
     const cb = el.querySelector('input[data-filter="branch"]');
-    if (!cb) continue;
-    if (gponBranchMatchesKmz(cb.value, key)){
-      el.classList.add('branch-highlight-linked');
+    if (cb && gponBranchMatchesKmz(cb.value, key)){
+      el.classList.add(CLS.BRANCH_HIGHLIGHT_LINKED);
     }
   }
+}
+
+function kmzRestoreFromLinked(){
+  const prev = K.isolationPrev || {};
+  const toShow = [];
+  for (const rr of K.routes){
+    const wasVisible = !!prev[rr.id];
+    if (rr.visible !== wasVisible) rr.visible = wasVisible;
+    if (wasVisible) toShow.push(rr.id);
+  }
+  K.isolationPrev = null;
+  kmzApplyFilters();
+  if (toShow.length) patchRoutesBulk(toShow, { visible: true });
 }
 
 function kmzLinkRoute(routeId){
   const r = K.routes.find(x => x.id === routeId);
   if (!r) return;
 
-  if (K.linked && K.linked.id === routeId){
-    kmzClearLink();
-    return;
-  }
-
-  if (K.linked){
-    kmzRestoreIsolationIfLinked();
-  }
+  if (K.linked?.id === routeId){ kmzClearLink(); return; }
+  if (K.linked) kmzRestoreFromLinked();
 
   const key = r.branch || r.name;
   K.linked = { type: 'route', id: r.id, key, folder: r.folder || '' };
 
   K.isolationPrev = {};
-  for (const rr of K.routes){
-    K.isolationPrev[rr.id] = !!rr.visible;
-  }
+  for (const rr of K.routes) K.isolationPrev[rr.id] = !!rr.visible;
 
-  const toShow = [r.id];
   const toHide = [];
   for (const rr of K.routes){
-    const wantVisible = (rr.id === r.id);
-    if (rr.visible !== wantVisible){
-      rr.visible = wantVisible;
-    }
-    if (!wantVisible) toHide.push(rr.id);
+    const want = (rr.id === r.id);
+    if (rr.visible !== want) rr.visible = want;
+    if (!want) toHide.push(rr.id);
   }
 
   kmzApplyFilters();
-  kmzUpdateAllTreeCheckboxes();
-
   if (toHide.length) patchRoutesBulk(toHide, { visible: false });
-  patchRoutesBulk(toShow, { visible: true });
+  patchRoutesBulk([r.id], { visible: true });
 
   kmzUpdateLinkBadge();
   gponApplyKmzLinkFilter();
   gponHighlightLinkedBranches();
 
   kmzFitToLinkedRoute();
-  setTimeout(() => {
-    if (K.linked && K.linked.id === routeId) kmzFitToLinkedRoute();
-  }, 150);
+  setTimeout(() => { if (K.linked?.id === routeId) kmzFitToLinkedRoute(); }, 150);
 
   kmzCollapseExceptRoute(routeId);
-  setTimeout(() => {
-    if (K.linked && K.linked.id === routeId) kmzCollapseExceptRoute(routeId);
-  }, 0);
+  setTimeout(() => { if (K.linked?.id === routeId) kmzCollapseExceptRoute(routeId); }, 0);
 
-  document.querySelectorAll('#filter-branch-list .branch-group, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-subsub')
-    .forEach(p => {
-      if (p.classList.contains('collapsed')){
-        p.classList.remove('collapsed');
-        const head = p.querySelector(':scope > .branch-group-head, :scope > .branch-subgroup-head, :scope > .branch-subsub-head');
-        if (head){
-          const tt = head.querySelector('.toggle-g, .toggle-s, .toggle-ss');
-          if (tt) tt.textContent = '▾';
-        }
-      }
-    });
+  document.querySelectorAll(
+    '#filter-branch-list .branch-group, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-subsub'
+  ).forEach(p => {
+    if (p.classList.contains('collapsed')){
+      p.classList.remove('collapsed');
+      const tt = p.querySelector(':scope > .branch-group-head .toggle-g, '
+                              + ':scope > .branch-subgroup-head .toggle-s, '
+                              + ':scope > .branch-subsub-head .toggle-ss');
+      if (tt) tt.textContent = '▾';
+    }
+  });
 }
 
 function kmzClearLink(){
   if (!K.linked) return;
-
-  kmzRestoreIsolationIfLinked();
+  kmzRestoreFromLinked();
   K.linked = null;
 
   const tree = $('folderTree');
   if (tree){
-    tree.querySelectorAll('.folder-row.linked').forEach(r => r.classList.remove('linked'));
-    tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove('linked'));
+    tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove(CLS.LINKED));
   }
 
   kmzUpdateLinkBadge();
   gponApplyKmzLinkFilter();
   gponHighlightLinkedBranches();
-
   setTimeout(() => kmzFitAll(), 100);
 }
 
@@ -1426,28 +1233,32 @@ function kmzUpdateLinkBadge(){
   t.textContent = `Связка: ${K.linked.key}`;
 }
 
-$('linkBadgeClear').onclick = () => {
-  kmzClearLink();
-};
+$('linkBadgeClear').onclick = () => kmzClearLink();
 
 /* ==========================================================================
-   GPON — парсинг
+   GPON — PARSERS
    ========================================================================== */
 function gponDecodeBytes(buf){
-  for (const enc of ['utf-8','windows-1251','koi8-r','iso-8859-5']){
-    try{
-      const t = new TextDecoder(enc, { fatal:true }).decode(buf);
+  for (const enc of ['utf-8', 'windows-1251', 'koi8-r', 'iso-8859-5']){
+    try {
+      const t = new TextDecoder(enc, { fatal: true }).decode(buf);
       if (/[А-Яа-яЁё]/.test(t) && !t.includes('\uFFFD')) return stripBOM(t);
-    }catch(_){}
+    } catch(_) {}
   }
   return stripBOM(new TextDecoder('windows-1251').decode(buf));
 }
+
 function gponDetectDelim(line){
-  const c = { ';': (line.match(/;/g)||[]).length, '\t': (line.match(/\t/g)||[]).length, ',': (line.match(/,/g)||[]).length };
+  const c = {
+    ';': (line.match(/;/g) || []).length,
+    '\t': (line.match(/\t/g) || []).length,
+    ',': (line.match(/,/g) || []).length,
+  };
   let best = ';', max = 0;
   for (const [d, n] of Object.entries(c)) if (n > max){ max = n; best = d; }
   return best;
 }
+
 function gponParseCSV(text, delim){
   const rows = [];
   let i = 0, len = text.length, row = [], field = '', inQ = false;
@@ -1455,7 +1266,7 @@ function gponParseCSV(text, delim){
     const ch = text[i];
     if (inQ){
       if (ch === '"'){
-        if (text[i+1] === '"'){ field += '"'; i += 2; continue; }
+        if (text[i + 1] === '"'){ field += '"'; i += 2; continue; }
         inQ = false; i++; continue;
       }
       const next = text.indexOf('"', i);
@@ -1466,7 +1277,7 @@ function gponParseCSV(text, delim){
     if (ch === delim){ row.push(field); field = ''; i++; continue; }
     if (ch === '\n' || ch === '\r'){
       row.push(field); rows.push(row); row = []; field = '';
-      i += (ch === '\r' && text[i+1] === '\n') ? 2 : 1;
+      i += (ch === '\r' && text[i + 1] === '\n') ? 2 : 1;
       continue;
     }
     const nd = text.indexOf(delim, i), nn = text.indexOf('\n', i), nr = text.indexOf('\r', i);
@@ -1478,85 +1289,59 @@ function gponParseCSV(text, delim){
   if (field.length || row.length){ row.push(field); rows.push(row); }
   return rows;
 }
+
 const GPON_RE_ADDR = [
-  [/ё/g,'е'], [/[«»"'`]/g,''], [/\s+/g,' '], [/[(){}\[\]]/g,''],
-  [/\bдом\b/g,'д'], [/\bд\.\s*/g,'д '], [/\bкв\.?\s*/g,'кв '],
-  [/\bкорп\.?\s*/g,'корп '], [/\bул\.\s*/g,'ул '], [/\bпер\.\s*/g,'пер '],
-  [/\bснт\.?\s*/g,'снт '], [/\bтер\.?\s*/g,'тер '], [/,\s*,/g,','],
+  [/ё/g, 'е'], [/[«»"'`]/g, ''], [/\s+/g, ' '], [/[(){}\[\]]/g, ''],
+  [/\bдом\b/g, 'д'], [/\bд\.\s*/g, 'д '], [/\bкв\.?\s*/g, 'кв '],
+  [/\bкорп\.?\s*/g, 'корп '], [/\bул\.\s*/g, 'ул '], [/\bпер\.\s*/g, 'пер '],
+  [/\bснт\.?\s*/g, 'снт '], [/\bтер\.?\s*/g, 'тер '], [/,\s*,/g, ','],
 ];
-function gponNormAddr(a){
+const gponNormAddr = (a) => {
   if (!a) return '';
   let s = String(a).toLowerCase();
   for (const [re, to] of GPON_RE_ADDR) s = s.replace(re, to);
   return s.trim();
-}
-function gponBranch(login){
+};
+
+const gponBranch = (login) => {
   if (!login) return 'Прочее';
   const head = login.split(':')[0];
   const p = head.split('/');
   if (p.length < 5) return head;
-  return p[0] + '/' + p[3] + '/' + p[4];
-}
-function gponStatusKey(s){
+  return `${p[0]}/${p[3]}/${p[4]}`;
+};
+
+const gponStatusKey = (s) => {
   if (/Активна/i.test(s)) return 'active';
   if (/Отключена/i.test(s)) return 'off';
   if (/Заблокирована/i.test(s)) return 'block';
   return 'other';
-}
-const GPON_STATUS_COLOR = { active:'#22c55e', off:'#94a3b8', block:'#ef4444', other:'#22c55e' };
-const GPON_STATUS_CLASS = { active:'stat-active', off:'stat-off', block:'stat-block', other:'' };
+};
 
 /* ==========================================================================
-   GPON — сохранение/восстановление состояния
+   GPON — SAVE / LOAD
    ========================================================================== */
-async function gponSaveGeo(){
-  try {
-    await fetch('/gpon/geo', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        geo: Object.fromEntries(G.geo),
-        geoFiles: G.geoFiles,
-      }),
-    });
-  } catch(e){
-    console.warn('gpon geo save failed', e);
-  }
-}
+const gponSaveGeo = () =>
+  fetch('/gpon/geo', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ geo: Object.fromEntries(G.geo), geoFiles: G.geoFiles }),
+  }).catch(e => console.warn('gpon geo save failed', e));
 
-async function gponSaveOnus(){
-  try {
-    await fetch('/gpon/onus', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        onus: G.onus,
-        vgFile: G.vgFile,
-      }),
-    });
-  } catch(e){
-    console.warn('gpon onus save failed', e);
-  }
-}
+const gponSaveOnus = () =>
+  fetch('/gpon/onus', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ onus: G.onus, vgFile: G.vgFile }),
+  }).catch(e => console.warn('gpon onus save failed', e));
 
 async function gponLoadState(){
   try {
-    const res = await fetch('/gpon/state');
-    const data = await res.json();
-    const hasGeo  = data.geo  && Object.keys(data.geo).length > 0;
-    const hasOnus = data.onus && data.onus.length > 0;
-    if (!hasGeo && !hasOnus) return false;
+    const data = await (await fetch('/gpon/state')).json();
+    if (!(data.geo && Object.keys(data.geo).length) && !data.onus?.length) return false;
 
     G.geo = new Map(Object.entries(data.geo || {}));
-
     G.onus = (data.onus || []).map(o => {
       const g = G.geo.get(gponNormAddr(o.address));
-      return {
-        ...o,
-        lat: g ? g.lat : null,
-        lng: g ? g.lng : null,
-        _statusKey: gponStatusKey(o.status || ''),
-      };
+      return { ...o, lat: g?.lat ?? null, lng: g?.lng ?? null, _statusKey: gponStatusKey(o.status || '') };
     });
 
     G.byBranch = new Map();
@@ -1565,7 +1350,7 @@ async function gponLoadState(){
       G.byBranch.get(o.branch).push(o);
     }
     G.geoFiles = data.geoFiles || [];
-    G.vgFile   = data.vgFile   || '';
+    G.vgFile = data.vgFile || '';
 
     if (G.geoFiles.length){
       $('fileGeoBtn').classList.add('active');
@@ -1579,7 +1364,7 @@ async function gponLoadState(){
     const matched = G.onus.filter(o => o.lat != null).length;
     $('diag').textContent =
       `geo: ${G.geo.size} адресов` +
-      (G.geoFiles.length ? ` (файлов: ${G.geoFiles.length})` : '') + `\n` +
+      (G.geoFiles.length ? ` (файлов: ${G.geoFiles.length})` : '') + '\n' +
       `ONU: ${G.onus.length}, на карте ${matched}` +
       (G.vgFile ? ` (${G.vgFile})` : '');
 
@@ -1599,10 +1384,7 @@ async function gponLoadState(){
 async function gponClearState(){
   if (!confirm('Удалить сохранённые geo и vgroups? Это действие необратимо.')) return;
 
-  for (const k in G.branchLayers){
-    map.removeLayer(G.branchLayers[k]);
-    delete G.branchLayers[k];
-  }
+  for (const k in G.branchLayers){ map.removeLayer(G.branchLayers[k]); delete G.branchLayers[k]; }
   G.allMarkers.length = 0;
   _markersByBranch.clear();
   _clusterMembers.clear();
@@ -1613,10 +1395,8 @@ async function gponClearState(){
   G.geoFiles = [];
   G.vgFile = '';
   G.searchMode = false;
-  if (G.searchHighlightLayer){
-    map.removeLayer(G.searchHighlightLayer);
-    G.searchHighlightLayer = null;
-  }
+
+  if (G.searchHighlightLayer){ map.removeLayer(G.searchHighlightLayer); G.searchHighlightLayer = null; }
   G.editMode = null;
   gponHideEditHint();
 
@@ -1627,47 +1407,37 @@ async function gponClearState(){
   $('filter-status').innerHTML = '';
   $('filter-branch-list').innerHTML = '';
   const nl = $('gpon-nogeo-list'); if (nl) nl.innerHTML = '';
-  const nc = $('nogeo-count');     if (nc) nc.textContent = '';
+  const nc = $('nogeo-count'); if (nc) nc.textContent = '';
   $('diag').textContent = 'Загрузите Excel (geo*.xlsx) и vgroups.csv.';
   gponUpdateStats();
 
-  try {
-    await fetch('/gpon/state', { method: 'DELETE' });
-  } catch(e){
-    console.warn('gpon state delete failed', e);
-  }
+  try { await fetch('/gpon/state', { method: 'DELETE' }); }
+  catch(e){ console.warn('gpon state delete failed', e); }
 }
 
 $('clear-gpon-data').onclick = gponClearState;
 
 /* ==========================================================================
-   GPON — маркеры и попапы
+   GPON — MARKERS + POPUPS
    ========================================================================== */
 const GPON_ICON_CACHE = {};
-
 let _markersByBranch = new Map();
 let _clusterMembers = new Map();
 
 function gponGetIcon(color){
   if (GPON_ICON_CACHE[color]) return GPON_ICON_CACHE[color];
   return GPON_ICON_CACHE[color] = L.divIcon({
-    className:'onu-marker',
-    html:`<div style="background:${color};width:14px;height:14px;border-radius:50%;
+    className: 'onu-marker',
+    html: `<div style="background:${color};width:14px;height:14px;border-radius:50%;
       border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.6)"></div>`,
-    iconSize:[14,14], iconAnchor:[7,7],
+    iconSize: [14, 14], iconAnchor: [7, 7],
   });
 }
 
-let __curPopup = null;
-
 function gponBindPopup(layer){
   layer.bindPopup(gponBuildPopup(layer.__onu), {
-    closeButton:false, offset:[0,-5], autoClose:false, closeOnClick:false, autoPan:false,
+    closeButton: false, offset: [0, -5], autoClose: false, closeOnClick: false, autoPan: false,
   });
-
-  layer.off('mouseover');
-  layer.off('click');
-  layer.off('popupopen');
 
   layer.on('mouseover', function(){
     if (layer._editModeActive) return;
@@ -1682,32 +1452,20 @@ function gponBindPopup(layer){
     gponHighlightBranchInTree(layer.__onu.branch);
   });
 
-  layer.on('popupopen', function(){
-    const popupEl = layer.getPopup().getElement();
-    if (!popupEl) return;
-
-    popupEl.addEventListener('mousedown', (ev) => {
+  layer.on('popupopen', () => {
+    const el = layer.getPopup().getElement();
+    if (!el) return;
+    el.addEventListener('mousedown', ev => ev.stopPropagation());
+    if (el.__clickBound) return;
+    el.__clickBound = true;
+    el.addEventListener('click', (ev) => {
       ev.stopPropagation();
-    });
-    popupEl.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-
       const btn = ev.target.closest('button');
       if (!btn) return;
-
-      const action = btn.dataset.action;
-
-      if (action === 'save'){
-        ev.preventDefault();
-        gponSaveEditedMarker(layer);
-        return;
-      }
-      if (action === 'cancel'){
-        ev.preventDefault();
-        gponCancelEditMarker(layer);
-        return;
-      }
-      if (btn.id && btn.id.startsWith('onu-edit-')){
+      const act = btn.dataset.action;
+      if (act === ACT.SAVE){ ev.preventDefault(); gponSaveEditedMarker(layer); return; }
+      if (act === ACT.CANCEL){ ev.preventDefault(); gponCancelEditMarker(layer); return; }
+      if (btn.id?.startsWith('onu-edit-')){
         if (layer._editModeActive) return;
         ev.preventDefault();
         gponStartEditMarker(layer);
@@ -1722,7 +1480,7 @@ function gponBuildPopup(o){
     <div><b>Ветка:</b> ${esc(o.branch)}</div>
     <div><b>ONU ID:</b> ${esc(o.id)}</div>
     <div><b>Логин:</b> ${esc(o.login)}</div>
-    <div><b>Статус:</b> <span class="${GPON_STATUS_CLASS[o._statusKey]||''}">${esc(o.status)}</span></div>
+    <div><b>Статус:</b> <span class="${GPON_STATUS_CLASS[o._statusKey] || ''}">${esc(o.status)}</span></div>
     <hr style="margin:5px 0;border:none;border-top:1px solid #ddd">
     <div><b>Адрес:</b> ${esc(o.address)}</div>
     <div style="margin-top:6px">
@@ -1732,19 +1490,16 @@ function gponBuildPopup(o){
 }
 
 function gponBuildLayers(){
-  for (const k in G.branchLayers){
-    map.removeLayer(G.branchLayers[k]);
-    delete G.branchLayers[k];
-  }
+  for (const k in G.branchLayers){ map.removeLayer(G.branchLayers[k]); delete G.branchLayers[k]; }
   G.allMarkers.length = 0;
   _markersByBranch = new Map();
-  _clusterMembers  = new Map();
+  _clusterMembers = new Map();
 
   G.byBranch.forEach((onus, branch) => {
     const cluster = L.markerClusterGroup({
-      maxClusterRadius:45, disableClusteringAtZoom:17,
-      showCoverageOnHover:false, chunkedLoading:true,
-      chunkInterval:100, chunkDelay:30,
+      maxClusterRadius: 45, disableClusteringAtZoom: 17,
+      showCoverageOnHover: false, chunkedLoading: true,
+      chunkInterval: 100, chunkDelay: 30,
     });
     const arr = [];
     for (const p of onus){
@@ -1762,55 +1517,52 @@ function gponBuildLayers(){
     G.branchLayers[branch] = cluster;
     _markersByBranch.set(branch, arr);
     _clusterMembers.set(branch, new Set(arr));
-    cluster.addTo(map);
+    if (G.markersVisible) cluster.addTo(map);
   });
 
   gponApplyKmzLinkFilter();
-
-  if (K.linked){
-    setTimeout(() => kmzFitToLinkedRoute(), 150);
-  }
-
+  if (K.linked && G.markersVisible) setTimeout(() => kmzFitToLinkedRoute(), 150);
   gponRebuildNogeoList();
 }
 
 function gponApplyFilters(){
-  const fs = G.filters.status;
-  const fb = G.filters.branch;
-  const activeStatusFilter = fs.size > 0;
-  const activeBranchFilter = fb.size > 0;
+  if (!G.markersVisible){
+    for (const k in G.branchLayers){
+      const c = G.branchLayers[k];
+      if (map.hasLayer(c)) map.removeLayer(c);
+    }
+    return;
+  }
+
+  const { status: fs, branch: fb } = G.filters;
+  const activeStatus = fs.size > 0;
+  const activeBranch = fb.size > 0;
 
   const wanted = new Map();
   for (const m of G.allMarkers){
     const o = m.__onu;
     if (o.lat == null) continue;
-    if (activeStatusFilter && !fs.has(o._statusKey)) continue;
-    if (activeBranchFilter && !fb.has(o.branch))     continue;
-    let arr = wanted.get(o.branch);
-    if (!arr){ arr = []; wanted.set(o.branch, arr); }
-    arr.push(m);
+    if (activeStatus && !fs.has(o._statusKey)) continue;
+    if (activeBranch && !fb.has(o.branch)) continue;
+    (wanted.get(o.branch) ?? wanted.set(o.branch, []).get(o.branch)).push(m);
   }
 
   for (const branch in G.branchLayers){
     const cluster = G.branchLayers[branch];
     const arr = wanted.get(branch) || [];
     const has = arr.length > 0;
-    const on  = map.hasLayer(cluster);
+    const on = map.hasLayer(cluster);
 
     if (has && !on && !G.searchMode) cluster.addTo(map);
     if (!has && on) map.removeLayer(cluster);
-
     if (!has) continue;
 
     const cur = _clusterMembers.get(branch);
     if (cur && cur.size === arr.length){
       let same = true;
-      for (const m of arr){
-        if (!cur.has(m)){ same = false; break; }
-      }
+      for (const m of arr){ if (!cur.has(m)){ same = false; break; } }
       if (same) continue;
     }
-
     cluster.clearLayers();
     cluster.addLayers(arr);
     _clusterMembers.set(branch, new Set(arr));
@@ -1818,32 +1570,23 @@ function gponApplyFilters(){
 }
 
 /* ==========================================================================
-   GPON — редактирование геометок
+   GPON — EDIT COORDS
    ========================================================================== */
-function gponGeoKeyForOnu(o){
-  return gponNormAddr(o.address);
-}
+const gponGeoKeyForOnu = (o) => gponNormAddr(o.address);
 
 function gponStartEditMarker(marker){
   const o = marker.__onu;
 
   G.editMode = {
-    type: 'move',
-    onuId: o.id,
-    marker,
-    originalLat: o.lat,
-    originalLng: o.lng,
+    type: 'move', onuId: o.id, marker,
+    originalLat: o.lat, originalLng: o.lng,
     originalGeoKey: gponGeoKeyForOnu(o),
   };
 
-  if (marker.dragging) marker.dragging.enable();
+  marker.dragging?.enable();
   marker.setZIndexOffset(9999);
-
-  const el = marker.getElement();
-  if (el) el.classList.add('editable');
-
+  marker.getElement()?.classList.add(CLS.EDITABLE);
   marker._editModeActive = true;
-
   marker.closePopup();
 
   const curLat = o.lat != null ? o.lat.toFixed(7) : '';
@@ -1856,17 +1599,15 @@ function gponStartEditMarker(marker){
       <div><b>Логин:</b> ${esc(o.login)}</div>
       <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <label>Широта
-          <input type="text" id="onu-lat-${esc(o.id)}" value="${curLat}"
-            inputmode="decimal" autocomplete="off" />
+          <input type="text" id="onu-lat-${esc(o.id)}" value="${curLat}" inputmode="decimal" autocomplete="off" />
         </label>
         <label>Долгота
-          <input type="text" id="onu-lng-${esc(o.id)}" value="${curLng}"
-            inputmode="decimal" autocomplete="off" />
+          <input type="text" id="onu-lng-${esc(o.id)}" value="${curLng}" inputmode="decimal" autocomplete="off" />
         </label>
       </div>
       <div style="margin-top:8px">
-        <button type="button" class="primary" data-action="save">✓ Сохранить</button>
-        <button type="button" data-action="cancel">↺ Отменить</button>
+        <button type="button" class="primary" data-action="${ACT.SAVE}">✓ Сохранить</button>
+        <button type="button" data-action="${ACT.CANCEL}">↺ Отменить</button>
       </div>
       <div style="color:var(--muted);font-size:11px;margin-top:4px">
         Введите координаты или перетащите метку.
@@ -1881,16 +1622,14 @@ function gponStartEditMarker(marker){
     const lngEl = document.getElementById(`onu-lng-${o.id}`);
     if (!latEl || !lngEl) return;
 
-    // При перетаскивании маркера — подставить новые координаты в поля.
-    const syncInputsFromMarker = () => {
+    const sync = () => {
       const ll = marker.getLatLng();
       latEl.value = ll.lat.toFixed(7);
       lngEl.value = ll.lng.toFixed(7);
     };
-
-    marker.on('drag',  syncInputsFromMarker);
+    marker.on('drag', sync);
     marker.on('dragend', () => {
-      syncInputsFromMarker();
+      sync();
       if (!marker.isPopupOpen()) marker.openPopup();
     });
   }, 0);
@@ -1900,35 +1639,27 @@ function gponStartEditMarker(marker){
 
 async function gponSaveEditedMarker(marker){
   const o = marker.__onu;
-
   const latEl = document.getElementById(`onu-lat-${o.id}`);
   const lngEl = document.getElementById(`onu-lng-${o.id}`);
 
-  let newLat = null, newLng = null;
-  let hasManual = false;
+  let newLat, newLng, manual = false;
 
   if (latEl && lngEl){
     const latV = String(latEl.value).trim().replace(',', '.');
     const lngV = String(lngEl.value).trim().replace(',', '.');
-
-    if (latV !== '' && lngV !== ''){
+    if (latV && lngV){
       const lat = parseFloat(latV);
       const lng = parseFloat(lngV);
-      if (!isFinite(lat) || !isFinite(lng) ||
-          Math.abs(lat) > 90 || Math.abs(lng) > 180){
+      if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180){
         alert('Некорректные координаты. Широта: -90..90, долгота: -180..180.');
         return;
       }
-      newLat = lat;
-      newLng = lng;
-      hasManual = true;
+      newLat = lat; newLng = lng; manual = true;
     }
   }
-
-  if (!hasManual){
-    const latlng = marker.getLatLng();
-    newLat = latlng.lat;
-    newLng = latlng.lng;
+  if (!manual){
+    const ll = marker.getLatLng();
+    newLat = ll.lat; newLng = ll.lng;
   }
 
   o.lat = newLat;
@@ -1940,31 +1671,19 @@ async function gponSaveEditedMarker(marker){
 
   try {
     const res = await fetch('/gpon/geo/point', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        addr: key,
-        lat: newLat,
-        lng: newLng,
-        address: o.address,
-      }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addr: key, lat: newLat, lng: newLng, address: o.address }),
     });
-    if (!res.ok){
-      console.warn('server returned', res.status);
-    }
-  } catch(e){
-    console.warn('save geo point failed', e);
-  }
+    if (!res.ok) console.warn('server returned', res.status);
+  } catch(e){ console.warn('save geo point failed', e); }
 
-  if (marker.dragging) marker.dragging.disable();
+  marker.dragging?.disable();
   marker.setZIndexOffset(0);
   marker._editModeActive = false;
-
   marker.off('drag');
   marker.off('dragend');
-
-  const el = marker.getElement();
-  if (el) el.classList.remove('editable');
+  marker.getElement()?.classList.remove(CLS.EDITABLE);
   G.editMode = null;
   gponHideEditHint();
 
@@ -1978,19 +1697,14 @@ function gponCancelEditMarker(marker){
   const o = marker.__onu;
   const { originalLat, originalLng } = G.editMode;
 
-  o.lat = originalLat;
-  o.lng = originalLng;
+  o.lat = originalLat; o.lng = originalLng;
   marker.setLatLng([originalLat, originalLng]);
-
-  if (marker.dragging) marker.dragging.disable();
+  marker.dragging?.disable();
   marker.setZIndexOffset(0);
   marker._editModeActive = false;
-
   marker.off('drag');
   marker.off('dragend');
-
-  const el = marker.getElement();
-  if (el) el.classList.remove('editable');
+  marker.getElement()?.classList.remove(CLS.EDITABLE);
   G.editMode = null;
   gponHideEditHint();
 
@@ -1998,18 +1712,10 @@ function gponCancelEditMarker(marker){
   gponBindPopup(marker);
 }
 
-function gponShowEditHint(text){
-  const el = $('editHint');
-  if (!el) return;
-  el.textContent = text;
-  el.classList.remove('hidden');
-}
-function gponHideEditHint(){
-  const el = $('editHint');
-  if (el) el.classList.add('hidden');
-}
+const gponShowEditHint = (text) => { const el = $('editHint'); if (el){ el.textContent = text; el.classList.remove('hidden'); } };
+const gponHideEditHint = () => { $('editHint')?.classList.add('hidden'); };
 
-/* ---------- Установка координат для ONU без координат ---------- */
+/* ---------- Установка координат с нуля ---------- */
 function gponStartSetCoord(onuId){
   const o = G.onus.find(x => x.id === onuId);
   if (!o) return;
@@ -2024,25 +1730,21 @@ function gponHandleMapClickForSet(latlng){
 
   o.lat = latlng.lat;
   o.lng = latlng.lng;
-
   const key = gponGeoKeyForOnu(o);
   G.geo.set(key, { lat: latlng.lat, lng: latlng.lng, address: o.address });
 
   fetch('/gpon/geo/point', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ addr: key, lat: latlng.lat, lng: latlng.lng, address: o.address }),
   }).catch(e => console.warn('save geo point failed', e));
 
   G.editMode = null;
   gponHideEditHint();
-
   gponBuildLayers();
-  gponRebuildNogeoList();
   gponUpdateStats();
 }
 
-/* ---------- Список ONU без координат ---------- */
+/* ---------- «Без координат» ---------- */
 function gponRebuildNogeoList(){
   const el = $('gpon-nogeo-list');
   const cnt = $('nogeo-count');
@@ -2077,69 +1779,65 @@ function gponRebuildNogeoList(){
 }
 
 /* ==========================================================================
-   GPON — подсветка ветки в дереве при клике по маркеру
+   GPON — HIGHLIGHT BRANCH IN TREE
    ========================================================================== */
 function gponClearBranchHighlight(){
-  const root = $('filter-branch-list');
-  if (!root) return;
-  root.querySelectorAll('.filter-item.branch-highlight')
-      .forEach(el => el.classList.remove('branch-highlight'));
+  $('filter-branch-list')?.querySelectorAll(`.filter-item.${CLS.BRANCH_HIGHLIGHT}`)
+    .forEach(el => el.classList.remove(CLS.BRANCH_HIGHLIGHT));
 }
 
 function gponHighlightBranchInTree(branch){
   const root = $('filter-branch-list');
   if (!root) return;
-
   gponClearBranchHighlight();
   if (!branch) return;
 
-  const all = root.querySelectorAll('.filter-item');
   let target = null;
-  for (const el of all){
-    const cb = el.querySelector('input[data-filter="branch"]');
-    if (cb && cb.value === branch){ target = el; break; }
+  for (const el of root.querySelectorAll('.filter-item')){
+    if (el.querySelector('input[data-filter="branch"]')?.value === branch){ target = el; break; }
   }
   if (!target) return;
 
-  target.classList.add('branch-highlight');
+  target.classList.add(CLS.BRANCH_HIGHLIGHT);
 
   let p = target.parentElement;
   while (p && p !== root){
     if (p.classList.contains('collapsed')){
       p.classList.remove('collapsed');
-      const head = p.querySelector(':scope > .branch-group-head, :scope > .branch-subgroup-head, :scope > .branch-subsub-head');
-      if (head){
-        const tt = head.querySelector('.toggle-g, .toggle-s, .toggle-ss');
-        if (tt) tt.textContent = '▾';
-      }
+      const tt = p.querySelector(':scope > .branch-group-head .toggle-g, '
+                              + ':scope > .branch-subgroup-head .toggle-s, '
+                              + ':scope > .branch-subsub-head .toggle-ss');
+      if (tt) tt.textContent = '▾';
     }
     p = p.parentElement;
   }
-
-  try { target.scrollIntoView({ block:'center', behavior:'smooth' }); } catch(_){}
+  try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(_) {}
 }
 
 /* ==========================================================================
-   GPON — разбор Excel и CSV
+   GPON — PARSERS (WORKBOOK + CSV)
    ========================================================================== */
 function gponParseGeoWorkbook(buf, fname, out){
-  const wb = XLSX.read(buf, { type:'array' });
-  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1, raw:true });
+  const wb = XLSX.read(buf, { type: 'array' });
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true });
+
   let h = -1;
   for (let i = 0; i < Math.min(rows.length, 30); i++){
-    const r = rows[i];
-    if (r && r.some(c => String(c).trim() === 'Широта')){ h = i; break; }
+    if (rows[i]?.some(c => String(c).trim() === 'Широта')){ h = i; break; }
   }
   if (h < 0) throw new Error(`«${fname}»: нет столбца «Широта»`);
+
   const header = rows[h];
   const cLat = header.findIndex(x => String(x).trim() === 'Широта');
   const cLng = header.findIndex(x => String(x).trim() === 'Долгота');
   const cAddr = header.findIndex(x => String(x).trim() === 'Описание');
   if (cLat < 0 || cLng < 0) throw new Error('Нет «Широта»/«Долгота»');
   if (cAddr < 0) throw new Error('Нет «Описание»');
+
   let added = 0, skipped = 0;
   for (let i = h + 1; i < rows.length; i++){
-    const r = rows[i]; if (!r) continue;
+    const r = rows[i];
+    if (!r) continue;
     const lat = parseFloat(String(r[cLat]).replace(',', '.'));
     const lng = parseFloat(String(r[cLng]).replace(',', '.'));
     const addr = r[cAddr];
@@ -2154,12 +1852,15 @@ function gponParseVgroups(text){
   const first = text.split(/\r?\n/)[0] || '';
   const delim = gponDetectDelim(first);
   const rows = gponParseCSV(text, delim);
-  if (!rows.length) return { matched:0, unmatched:0, total:0 };
-  const header = rows[0].map(h => (h||'').replace(/^"|"$/g,'').trim());
+  if (!rows.length) return { matched: 0, unmatched: 0, total: 0 };
+
+  const header = rows[0].map(h => (h || '').replace(/^"|"$/g, '').trim());
   let iLogin = header.indexOf('Логин');
   if (iLogin < 0){
     const probe = rows[1] || [];
-    for (let i = 0; i < probe.length; i++) if ((probe[i]||'').includes('/')){ iLogin = i; break; }
+    for (let i = 0; i < probe.length; i++){
+      if ((probe[i] || '').includes('/')){ iLogin = i; break; }
+    }
   }
   if (iLogin < 0) iLogin = 1;
   const iID = header.indexOf('ID') >= 0 ? header.indexOf('ID') : 0;
@@ -2168,19 +1869,22 @@ function gponParseVgroups(text){
 
   const onus = [], byBranch = new Map();
   let matched = 0, unmatched = 0;
+
   for (let i = 1; i < rows.length; i++){
-    const r = rows[i]; if (!r) continue;
-    const login = (r[iLogin]||'').trim();
-    const addr = (r[iAddr]||'').trim();
+    const r = rows[i];
+    if (!r) continue;
+    const login = (r[iLogin] || '').trim();
+    const addr = (r[iAddr] || '').trim();
     if (!login || !addr || login === 'null' || addr === 'null') continue;
+
     const g = G.geo.get(gponNormAddr(addr));
-    const status = iStat >= 0 ? (r[iStat]||'').trim() : '';
+    const status = iStat >= 0 ? (r[iStat] || '').trim() : '';
     const o = {
-      id: (r[iID]||'').trim(),
+      id: (r[iID] || '').trim(),
       login, address: addr, status,
       branch: gponBranch(login),
-      lat: g ? g.lat : null,
-      lng: g ? g.lng : null,
+      lat: g?.lat ?? null,
+      lng: g?.lng ?? null,
       _statusKey: gponStatusKey(status),
     };
     onus.push(o);
@@ -2194,7 +1898,7 @@ function gponParseVgroups(text){
 }
 
 /* ==========================================================================
-   GPON — статистика и фильтры
+   GPON — STATS + FILTERS
    ========================================================================== */
 function gponUpdateStats(){
   let matched = 0;
@@ -2206,17 +1910,17 @@ function gponUpdateStats(){
 
 function gponBuildStatusFilter(){
   const items = [
-    { key:'active', label:'🟢 Активна', cls:'stat-active' },
-    { key:'off',    label:'⚪ Отключена', cls:'stat-off' },
-    { key:'block',  label:'🔴 Заблокирована', cls:'stat-block' },
-    { key:'other',  label:'⚪ Другое' },
+    { key: 'active', label: '🟢 Активна', cls: 'stat-active' },
+    { key: 'off', label: '⚪ Отключена', cls: 'stat-off' },
+    { key: 'block', label: '🔴 Заблокирована', cls: 'stat-block' },
+    { key: 'other', label: '⚪ Другое' },
   ];
   const frag = document.createDocumentFragment();
   for (const s of items){
     const l = document.createElement('label');
     l.className = 'filter-item';
     l.innerHTML = `<input type="checkbox" data-filter="status" value="${s.key}">
-      <span class="${s.cls||''}">${s.label}</span>`;
+      <span class="${s.cls || ''}">${s.label}</span>`;
     frag.appendChild(l);
   }
   $('filter-status').replaceChildren(frag);
@@ -2224,6 +1928,7 @@ function gponBuildStatusFilter(){
 
 function gponBuildBranchFilter(){
   const el = $('filter-branch-list');
+
   const tree = new Map();
   for (const [branch, onus] of G.byBranch){
     const g = gponBranchGroup(branch);
@@ -2236,108 +1941,121 @@ function gponBuildBranchFilter(){
     if (!ssg.has(ss)) ssg.set(ss, []);
     ssg.get(ss).push({ branch, cnt: onus.length });
   }
-  const RANK = { 'slav*':0, 'bdcom-*':1, '— Прочие':2 };
-  const sorted = [...tree.keys()].sort((a,b) => (RANK[a] ?? 3) - (RANK[b] ?? 3) || a.localeCompare(b,'ru'));
+
+  const RANK = { 'slav*': 0, 'bdcom-*': 1, '— Прочие': 2 };
+  const sorted = [...tree.keys()].sort((a, b) =>
+    (RANK[a] ?? 3) - (RANK[b] ?? 3) || a.localeCompare(b, 'ru'));
 
   const frag = document.createDocumentFragment();
-  for (const gname of sorted){
-    const subs = tree.get(gname);
-    let gB = 0, gO = 0;
-    subs.forEach(ssMap => ssMap.forEach(arr => { gB += arr.length; arr.forEach(({cnt}) => gO += cnt); }));
-    const gEl = document.createElement('div');
-    gEl.className = 'branch-group';
-    gEl.innerHTML = `<label class="branch-group-head">
-      <input type="checkbox" class="group-check" data-group="${esc(gname)}">
-      <span class="toggle-g">▸</span>
-      <span class="g-name">${esc(gname)}</span>
-      <span class="g-cnt">${gB} / ${gO}</span></label>`;
-    const gList = document.createElement('div');
-    gList.className = 'branch-group-list';
-
-    const sortedSubs = [...subs.keys()].sort((a,b) => a.localeCompare(b,'ru'));
-    for (const sname of sortedSubs){
-      const ssMap = subs.get(sname);
-      let sB = 0, sO = 0;
-      ssMap.forEach(arr => { sB += arr.length; arr.forEach(({cnt}) => sO += cnt); });
-      const sEl = document.createElement('div');
-      sEl.className = 'branch-subgroup';
-      sEl.innerHTML = `<label class="branch-subgroup-head">
-        <input type="checkbox" class="subgroup-check" data-subgroup="${esc(sname)}">
-        <span class="toggle-s">▸</span>
-        <span class="s-name">${esc(sname)}</span>
-        <span class="s-cnt">${sB} / ${sO}</span></label>`;
-      const sList = document.createElement('div');
-      sList.className = 'branch-subgroup-list';
-
-      const sortedSS = [...ssMap.keys()].sort((a,b) => a.localeCompare(b,'ru'));
-      for (const ssname of sortedSS){
-        const items = ssMap.get(ssname);
-        if (ssname === ''){
-          for (const {branch, cnt} of items){
-            const l = document.createElement('label');
-            l.className = 'filter-item';
-            l.dataset.branch = branch.toLowerCase();
-            l.innerHTML = `<input type="checkbox" data-filter="branch" value="${esc(branch)}">
-              <span class="name">${esc(branch)}</span><span class="cnt">${cnt}</span>`;
-            sList.appendChild(l);
-          }
-          continue;
-        }
-        const ss = document.createElement('div');
-        ss.className = 'branch-subsub';
-        let ssO = 0;
-        for (const {cnt} of items) ssO += cnt;
-        ss.innerHTML = `<label class="branch-subsub-head">
-          <input type="checkbox" class="subsub-check" data-subsub="${esc(ssname)}">
-          <span class="toggle-ss">▸</span>
-          <span class="ss-name">${esc(ssname)}</span>
-          <span class="ss-cnt">${items.length} / ${ssO}</span></label>`;
-        const ssList = document.createElement('div');
-        ssList.className = 'branch-subsub-list';
-        for (const {branch, cnt} of items){
-          const l = document.createElement('label');
-          l.className = 'filter-item';
-          l.dataset.branch = branch.toLowerCase();
-          l.innerHTML = `<input type="checkbox" data-filter="branch" value="${esc(branch)}">
-            <span class="name">${esc(branch)}</span><span class="cnt">${cnt}</span>`;
-          ssList.appendChild(l);
-        }
-        ss.appendChild(ssList);
-        sList.appendChild(ss);
-      }
-      sEl.appendChild(sList);
-      gList.appendChild(sEl);
-    }
-    gEl.appendChild(gList);
-    frag.appendChild(gEl);
-  }
+  for (const gname of sorted) frag.appendChild(renderBranchGroup(gname, tree.get(gname)));
   el.replaceChildren(frag);
 
-  el.addEventListener('click', gponFilterClick);
-  el.addEventListener('change', gponFilterChange);
-  gponSyncChecks();
+  if (!el.__bound){
+    el.__bound = true;
+    el.addEventListener('click', gponFilterClick);
+    el.addEventListener('change', gponFilterChange);
+  }
 
+  gponSyncChecks();
   gponHighlightLinkedBranches();
 }
 
-function gponBranchGroup(b){
-  if (!b) return '— Прочие';
-  if (b.charCodeAt(0) === 45) return '— Прочие';
+function renderBranchGroup(gname, subs){
+  let gB = 0, gO = 0;
+  subs.forEach(ssMap => ssMap.forEach(arr => {
+    gB += arr.length;
+    arr.forEach(({ cnt }) => gO += cnt);
+  }));
+
+  const gEl = document.createElement('div');
+  gEl.className = 'branch-group';
+  gEl.innerHTML = `<label class="branch-group-head">
+    <input type="checkbox" class="group-check" data-group="${esc(gname)}">
+    <span class="toggle-g">▸</span>
+    <span class="g-name">${esc(gname)}</span>
+    <span class="g-cnt">${gB} / ${gO}</span></label>`;
+  const gList = document.createElement('div');
+  gList.className = 'branch-group-list';
+
+  const sortedSubs = [...subs.keys()].sort((a, b) => a.localeCompare(b, 'ru'));
+  for (const sname of sortedSubs) gList.appendChild(renderBranchSubgroup(sname, subs.get(sname)));
+  gEl.appendChild(gList);
+  return gEl;
+}
+
+function renderBranchSubgroup(sname, ssMap){
+  let sB = 0, sO = 0;
+  ssMap.forEach(arr => {
+    sB += arr.length;
+    arr.forEach(({ cnt }) => sO += cnt);
+  });
+
+  const sEl = document.createElement('div');
+  sEl.className = 'branch-subgroup';
+  sEl.innerHTML = `<label class="branch-subgroup-head">
+    <input type="checkbox" class="subgroup-check" data-subgroup="${esc(sname)}">
+    <span class="toggle-s">▸</span>
+    <span class="s-name">${esc(sname)}</span>
+    <span class="s-cnt">${sB} / ${sO}</span></label>`;
+  const sList = document.createElement('div');
+  sList.className = 'branch-subgroup-list';
+
+  const sortedSS = [...ssMap.keys()].sort((a, b) => a.localeCompare(b, 'ru'));
+  for (const ssname of sortedSS){
+    if (ssname === ''){
+      for (const { branch, cnt } of ssMap.get(ssname)) sList.appendChild(renderBranchLeaf(branch, cnt));
+      continue;
+    }
+    sList.appendChild(renderBranchSubsub(ssname, ssMap.get(ssname)));
+  }
+  sEl.appendChild(sList);
+  return sEl;
+}
+
+function renderBranchSubsub(ssname, items){
+  let ssO = 0;
+  for (const { cnt } of items) ssO += cnt;
+
+  const ss = document.createElement('div');
+  ss.className = 'branch-subsub';
+  ss.innerHTML = `<label class="branch-subsub-head">
+    <input type="checkbox" class="subsub-check" data-subsub="${esc(ssname)}">
+    <span class="toggle-ss">▸</span>
+    <span class="ss-name">${esc(ssname)}</span>
+    <span class="ss-cnt">${items.length} / ${ssO}</span></label>`;
+  const ssList = document.createElement('div');
+  ssList.className = 'branch-subsub-list';
+  for (const { branch, cnt } of items) ssList.appendChild(renderBranchLeaf(branch, cnt));
+  ss.appendChild(ssList);
+  return ss;
+}
+
+function renderBranchLeaf(branch, cnt){
+  const l = document.createElement('label');
+  l.className = 'filter-item';
+  l.dataset.branch = branch.toLowerCase();
+  l.innerHTML = `<input type="checkbox" data-filter="branch" value="${esc(branch)}">
+    <span class="name">${esc(branch)}</span><span class="cnt">${cnt}</span>`;
+  return l;
+}
+
+const gponBranchGroup = (b) => {
+  if (!b || b.charCodeAt(0) === 45) return '— Прочие';
   const l = b.toLowerCase();
   if (l.startsWith('bdcom')) return 'bdcom-*';
   if (l.startsWith('slav')) return 'slav*';
   return '— Прочие';
-}
-function gponBranchSubgroup(b){
+};
+const gponBranchSubgroup = (b) => {
   if (!b) return '—';
   const i = b.indexOf('/');
   return i <= 0 ? b : b.slice(0, i);
-}
-function gponBranchSubsub(b){
+};
+const gponBranchSubsub = (b) => {
   if (!b) return '';
   const f = b.indexOf('/'), l = b.lastIndexOf('/');
   return (f <= 0 || l <= f) ? '' : b.slice(0, l);
-}
+};
 
 function gponFilterClick(e){
   const head = e.target.closest('.branch-group-head, .branch-subgroup-head, .branch-subsub-head');
@@ -2359,13 +2077,13 @@ function gponFilterChange(e){
 
   if (t.matches('input[data-filter="branch"]')){
     const set = G.filters.branch;
-    if (t.checked) set.add(t.value); else set.delete(t.value);
+    t.checked ? set.add(t.value) : set.delete(t.value);
     gponApplyKmzLinkFilter(); gponSyncChecks();
     return;
   }
   if (t.matches('input[data-filter="status"]')){
     const set = G.filters.status;
-    if (t.checked) set.add(t.value); else set.delete(t.value);
+    t.checked ? set.add(t.value) : set.delete(t.value);
     gponApplyKmzLinkFilter();
     return;
   }
@@ -2377,67 +2095,61 @@ function gponFilterChange(e){
   const checks = container.querySelectorAll('input[data-filter="branch"]');
   for (const c of checks){
     c.checked = box.checked;
-    if (box.checked) set.add(c.value); else set.delete(c.value);
+    box.checked ? set.add(c.value) : set.delete(c.value);
   }
   gponApplyKmzLinkFilter(); gponSyncChecks();
 }
 
 function gponSyncChecks(){
   const root = $('filter-branch-list');
+  const syncPair = (box, checks) => {
+    if (!box) return;
+    let c = 0;
+    for (const x of checks) if (x.checked) c++;
+    box.checked = c === checks.length && checks.length > 0;
+    box.indeterminate = c > 0 && c < checks.length;
+  };
   for (const group of root.querySelectorAll('.branch-group')){
-    const gBox = group.querySelector('.group-check');
-    const gCh = group.querySelectorAll('input[data-filter="branch"]');
-    let ch = 0;
-    for (const c of gCh) if (c.checked) ch++;
-    if (gBox){ gBox.checked = ch === gCh.length && gCh.length > 0; gBox.indeterminate = ch > 0 && ch < gCh.length; }
-
+    syncPair(group.querySelector('.group-check'), group.querySelectorAll('input[data-filter="branch"]'));
     for (const sub of group.querySelectorAll('.branch-subgroup')){
-      const sBox = sub.querySelector('.subgroup-check');
-      const sCh = sub.querySelectorAll('input[data-filter="branch"]');
-      let sc = 0;
-      for (const c of sCh) if (c.checked) sc++;
-      if (sBox){ sBox.checked = sc === sCh.length && sCh.length > 0; sBox.indeterminate = sc > 0 && sc < sCh.length; }
-
+      syncPair(sub.querySelector('.subgroup-check'), sub.querySelectorAll('input[data-filter="branch"]'));
       for (const ss of sub.querySelectorAll('.branch-subsub')){
-        const ssBox = ss.querySelector('.subsub-check');
-        const ssCh = ss.querySelectorAll('input[data-filter="branch"]');
-        let ssc = 0;
-        for (const c of ssCh) if (c.checked) ssc++;
-        if (ssBox){ ssBox.checked = ssc === ssCh.length && ssCh.length > 0; ssBox.indeterminate = ssc > 0 && ssc < ssCh.length; }
+        syncPair(ss.querySelector('.subsub-check'), ss.querySelectorAll('input[data-filter="branch"]'));
       }
     }
   }
 }
 
+/* ==========================================================================
+   GPON — SEARCH
+   ========================================================================== */
 function gponSearch(q){
   const root = $('filter-branch-list');
   for (const group of root.querySelectorAll('.branch-group')){
-    let anyV = false;
+    let any = false;
     for (const sub of group.querySelectorAll('.branch-subgroup')){
-      let subV = false;
+      let subAny = false;
       for (const ss of sub.querySelectorAll('.branch-subsub')){
-        let ssV = false;
+        let ssAny = false;
         for (const el of ss.querySelectorAll('.filter-item')){
           const show = !q || el.dataset.branch.includes(q);
           el.style.display = show ? '' : 'none';
-          if (show){ anyV = subV = ssV = true; }
+          if (show) any = subAny = ssAny = true;
         }
-        ss.style.display = ssV ? '' : 'none';
+        ss.style.display = ssAny ? '' : 'none';
       }
       for (const el of sub.querySelectorAll(':scope > .branch-subgroup-list > .filter-item')){
         const show = !q || el.dataset.branch.includes(q);
         el.style.display = show ? '' : 'none';
-        if (show){ anyV = subV = true; }
+        if (show) any = subAny = true;
       }
-      sub.style.display = subV ? '' : 'none';
+      sub.style.display = subAny ? '' : 'none';
     }
-    group.style.display = anyV ? '' : 'none';
+    group.style.display = any ? '' : 'none';
   }
 
-  if (G.searchHighlightLayer){
-    map.removeLayer(G.searchHighlightLayer);
-    G.searchHighlightLayer = null;
-  }
+  if (G.searchHighlightLayer){ map.removeLayer(G.searchHighlightLayer); G.searchHighlightLayer = null; }
+
   if (!q){
     G.searchMode = false;
     gponApplyKmzLinkFilter();
@@ -2445,20 +2157,21 @@ function gponSearch(q){
     return;
   }
 
-  const hits = [];
-  for (const o of G.onus){
-    if (o.lat == null) continue;
-    if ((o.id + ' ' + o.login + ' ' + o.address + ' ' + o.status + ' ' + o.branch).toLowerCase().includes(q))
-      hits.push(o);
+  if (!G.markersVisible){
+    $('s-found').textContent = '—';
+    return;
   }
+
+  const hits = G.onus.filter(o => o.lat != null &&
+    (o.id + ' ' + o.login + ' ' + o.address + ' ' + o.status + ' ' + o.branch).toLowerCase().includes(q));
+
   G.searchMode = true;
   for (const k in G.branchLayers) if (map.hasLayer(G.branchLayers[k])) map.removeLayer(G.branchLayers[k]);
 
   const layer = L.layerGroup();
   for (const o of hits){
     const c = L.circleMarker([o.lat, o.lng], {
-      radius:14, color:'#38bdf8', weight:3,
-      fillColor:'#38bdf8', fillOpacity:.15,
+      radius: 14, color: '#38bdf8', weight: 3, fillColor: '#38bdf8', fillOpacity: .15,
     });
     c.__onu = o;
     gponBindPopup(c);
@@ -2471,7 +2184,59 @@ function gponSearch(q){
 }
 
 /* ==========================================================================
-   СОБЫТИЯ — KMZ
+   GPON — SHOW / HIDE MARKERS
+   ========================================================================== */
+function gponSetMarkersVisible(visible){
+  G.markersVisible = !!visible;
+
+  if (G.markersVisible){
+    if (G.searchMode){
+      // при активном поиске слои возвращать не нужно
+    } else if (K.linked){
+      gponApplyKmzLinkFilter();
+    } else {
+      gponApplyFilters();
+    }
+  } else {
+    for (const k in G.branchLayers){
+      const c = G.branchLayers[k];
+      if (map.hasLayer(c)) map.removeLayer(c);
+    }
+    if (G.searchHighlightLayer){
+      map.removeLayer(G.searchHighlightLayer);
+      G.searchHighlightLayer = null;
+    }
+  }
+
+  const btn = $('btnMarkersVis');
+  if (btn){
+    btn.textContent = G.markersVisible ? '👁️' : '🙈';
+    btn.title = G.markersVisible ? 'Скрыть GPON-метки' : 'Показать GPON-метки';
+  }
+
+  try { localStorage.setItem('gpon-markers-visible', G.markersVisible ? '1' : '0'); } catch(_) {}
+}
+
+/* ==========================================================================
+   MAP — click handler
+   ========================================================================== */
+map.on('click', (e) => {
+  if (G.editMode?.type === 'set'){
+    L.DomEvent.stopPropagation(e);
+    gponHandleMapClickForSet(e.latlng);
+    return;
+  }
+  if (__curPopup){ __curPopup.closePopup(); __curPopup = null; }
+
+  const stopped = e.originalEvent?._stopped;
+  if (stopped) return;
+
+  if (K.linked) kmzClearLink();
+  gponClearBranchHighlight();
+});
+
+/* ==========================================================================
+   KMZ EVENTS
    ========================================================================== */
 $('btnUploadFiles').onclick = () => $('fileInput').click();
 $('btnUploadFolder').onclick = () => $('folderInput').click();
@@ -2481,7 +2246,7 @@ $('folderInput').onchange = e => kmzUpload([...e.target.files]);
 $('btnNewFolder').onclick = () => {
   const n = prompt('Название новой папки (можно / для вложенности):');
   if (!n) return;
-  const clean = n.trim().replace(/^\/+|\/+$/g,'');
+  const clean = n.trim().replace(/^\/+|\/+$/g, '');
   if (!clean) return;
   K.customFolders.add(clean);
   kmzFolderAdd(clean);
@@ -2497,7 +2262,7 @@ $('btnExport').onclick = async () => {
   if (!ids.length){ alert('Нет видимых маршрутов'); return; }
   const grp = confirm('Группировать по ветвям? OK — да, Отмена — нет.');
   const res = await fetch('/export', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids, group_by_branch: grp }),
   });
   const blob = await res.blob();
@@ -2508,10 +2273,7 @@ $('btnExport').onclick = async () => {
 };
 
 $('btnExportTree').onclick = async () => {
-  if (!K.routes.length){
-    alert('Дерево пустое — нечего выгружать.');
-    return;
-  }
+  if (!K.routes.length){ alert('Дерево пустое — нечего выгружать.'); return; }
 
   const visibleCount = K.routes.filter(r => r.visible).length;
   const onlyVisible = confirm(
@@ -2527,18 +2289,14 @@ $('btnExportTree').onclick = async () => {
 
   try {
     const res = await fetch('/export_tree', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ only_visible: onlyVisible }),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = 'routes_tree.zip';
-    a.click();
+    a.href = url; a.download = 'routes_tree.zip'; a.click();
     URL.revokeObjectURL(url);
   } catch(e){
     console.error('export_tree failed', e);
@@ -2551,20 +2309,17 @@ $('btnExportTree').onclick = async () => {
 
 let dragCounter = 0;
 window.addEventListener('dragenter', e => {
-  if (State.mode !== 'kmz') return;
-  if (K.dragPayload) return;
+  if (K.linked) return;
   if (!e.dataTransfer.types.includes('Files')) return;
   dragCounter++;
 });
 window.addEventListener('dragleave', () => {
-  if (State.mode !== 'kmz') return;
   dragCounter = Math.max(0, dragCounter - 1);
 });
 window.addEventListener('dragover', e => {
-  if (State.mode === 'kmz' && e.dataTransfer.types.includes('Files')) e.preventDefault();
+  if (e.dataTransfer.types.includes('Files')) e.preventDefault();
 });
 window.addEventListener('drop', async e => {
-  if (State.mode !== 'kmz') return;
   if (K.dragPayload) return;
   e.preventDefault();
   dragCounter = 0;
@@ -2589,43 +2344,47 @@ window.addEventListener('drop', async e => {
     }
   }
   for (const it of items){
-    const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+    const entry = it.webkitGetAsEntry?.();
     if (entry) await walk(entry, '');
   }
   if (files.length) kmzUpload(files);
 });
 
 /* ==========================================================================
-   СОБЫТИЯ — GPON
+   GPON EVENTS
    ========================================================================== */
 $('fileGeo').onchange = async e => {
-  const files = [...(e.target.files||[])];
+  const files = [...(e.target.files || [])];
   if (!files.length) return;
+
   $('diag').textContent = `Чтение ${files.length} файлов…`;
   const out = new Map();
   const results = await Promise.all(files.map(async f => {
     try {
       const buf = await f.arrayBuffer();
       const r = gponParseGeoWorkbook(buf, f.name, out);
-      return { name:f.name, ...r, ok:true };
-    } catch(err){ return { name:f.name, ok:false, error:err.message }; }
+      return { name: f.name, ...r, ok: true };
+    } catch(err){ return { name: f.name, ok: false, error: err.message }; }
   }));
+
   G.geo = out;
   G.geoFiles = files.map(f => f.name);
   $('fileGeoBtn').classList.add('active');
   $('fileGeoBtn').childNodes[0].nodeValue = `📂 Excel × ${files.length} `;
+
   const lines = results.map(r => r.ok ? `  ✓ ${r.name}: ${r.added}` : `  ✗ ${r.name}: ${r.error}`);
-  const total = results.reduce((s,r) => s + (r.ok ? r.added : 0), 0);
+  const total = results.reduce((s, r) => s + (r.ok ? r.added : 0), 0);
   $('diag').textContent = `Excel: ${files.length} файл., адресов: ${total}\n` + lines.join('\n');
 
   if (G.onus.length) await gponReindex();
-
   await gponSaveGeo();
   e.target.value = '';
 };
 
 $('fileVg').onchange = async e => {
-  const f = e.target.files[0]; if (!f) return;
+  const f = e.target.files[0];
+  if (!f) return;
+
   try {
     const text = gponDecodeBytes(await f.arrayBuffer());
     const r = gponParseVgroups(text);
@@ -2637,7 +2396,6 @@ $('fileVg').onchange = async e => {
     gponBuildBranchFilter();
     gponBuildLayers();
     gponUpdateStats();
-
     await gponSaveOnus();
   } catch(err){ alert('CSV: ' + err.message); }
   e.target.value = '';
@@ -2647,8 +2405,8 @@ async function gponReindex(){
   let m = 0, u = 0;
   for (const o of G.onus){
     const g = G.geo.get(gponNormAddr(o.address));
-    o.lat = g ? g.lat : null;
-    o.lng = g ? g.lng : null;
+    o.lat = g?.lat ?? null;
+    o.lng = g?.lng ?? null;
     if (g) m++; else u++;
   }
   gponBuildStatusFilter();
@@ -2656,7 +2414,6 @@ async function gponReindex(){
   gponBuildLayers();
   gponUpdateStats();
   $('diag').textContent = `geo: ${G.geo.size} адресов · ONU: ${G.onus.length} · на карте ${m} · без координат ${u}`;
-
   await gponSaveGeo();
   await gponSaveOnus();
 }
@@ -2675,11 +2432,11 @@ $('reset-filters').onclick = () => {
 };
 
 /* ==========================================================================
-   ПОИСК / ТЕМА / INIT
+   SEARCH / THEME / MARKERS VISIBILITY / INIT
    ========================================================================== */
 $('search').addEventListener('input', debounce(() => {
   const q = $('search').value.trim().toLowerCase();
-  if (State.mode === 'kmz'){
+  if (document.querySelector('.mode-switch button.active').dataset.mode === 'kmz'){
     K.search = q;
     kmzApplyFilters();
   } else {
@@ -2690,18 +2447,26 @@ $('search').addEventListener('input', debounce(() => {
 function applyTheme(t){
   document.documentElement.dataset.theme = t;
   $('theme').textContent = t === 'light' ? '☀️' : '🌙';
-  try { localStorage.setItem('viewer-theme', t); } catch(_){}
+  try { localStorage.setItem('viewer-theme', t); } catch(_) {}
 }
 applyTheme(localStorage.getItem('viewer-theme') || 'dark');
 $('theme').onclick = () =>
   applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
 
+$('btnMarkersVis').onclick = () => gponSetMarkersVisible(!G.markersVisible);
+
 (async function init(){
+  // восстанавливаем видимость меток ДО того, как загрузятся данные
+  const savedVis = localStorage.getItem('gpon-markers-visible');
+  G.markersVisible = savedVis === null ? true : savedVis === '1';
+
   await kmzLoadRoutes();
   await kmzLoadFolders();
   await gponLoadState();
   setMode('kmz');
   $('s-found').textContent = '—';
+  $('btnMarkersVis').textContent = G.markersVisible ? '👁️' : '🙈';
+  $('btnMarkersVis').title = G.markersVisible ? 'Скрыть GPON-метки' : 'Показать GPON-метки';
 })();
 </script>
 </body>
