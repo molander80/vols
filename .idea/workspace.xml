@@ -6,9 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="b4738e0b-4600-48a7-8a6e-5e025ce544ba" name="Changes" comment="feat(export): кнопка «Выгрузить дерево» — зеркало маршрутов в uploads/tree/&#10;&#10;По кнопке в KMZ-топбаре дерево маршрутов выгружается на диск в&#10;uploads/tree/&lt;folder...&gt;/&lt;branch или name&gt;.kmz и отдаётся клиенту&#10;как routes_tree.zip. При каждой выгрузке uploads/tree/ полностью&#10;очищается, чтобы не оставалось старых переименованных файлов.&#10;state.json остаётся источником правды — выгрузка односторонняя.&#10;&#10;app.py&#10;  * Новый роут POST /export_tree.&#10;    - Тело (JSON, необязательное): { &quot;only_visible&quot;: true|false }&#10;    - Перед записью shutil.rmtree(uploads/tree), затем создаёт заново.&#10;    - Каждый маршрут пишется как отдельный KMZ:&#10;      &lt;folder1&gt;/&lt;folder2&gt;/.../&lt;branch или name&gt;.kmz&#10;    - Защита от коллизий имён: foo.kmz → foo__2.kmz, foo__3.kmz, …&#10;    - Упаковывает uploads/tree/ в ZIP (ZIP_DEFLATED), отдаёт&#10;      как routes_tree.zip.&#10;  * Хелперы:&#10;    - _safe_name(s) — экранирование символов &lt; &gt; : &quot; / \ | ? *,&#10;      обрезка точек/пробелов в конце, защита резервных имён Windows&#10;      (CON, PRN, AUX, NUL, COM1..COM9, LPT1..LPT9) префиксом '_'.&#10;    - _tree_route_relative_path(r) — строит относительный путь из&#10;      r.folder и r.branch/r.name.&#10;    - _write_route_kmz_to_file(r, path) — простой KMZ через simplekml.&#10;  * Импорты: добавлены re и shutil.&#10;&#10;index.html&#10;  * Новая кнопка #btnExportTree «📥 Выгрузить дерево» в kmzControls&#10;    рядом с 💾 KMZ, с tooltip о месте сохранения.&#10;  * Обработчик кнопки:&#10;    - Если дерево пустое — alert и выход.&#10;    - confirm: «только видимые (N шт.)» или «все (M шт.)».&#10;    - Кнопка блокируется, текст меняется на «⏳ Собираю…».&#10;    - POST /export_tree с { only_visible }, скачивание ZIP через&#10;      Blob + URL.createObjectURL.&#10;    - Ошибки HTTP и сети выводятся в alert, кнопка возвращается&#10;      в исходное состояние.&#10;  * CSS: добавлено .btn:disabled { opacity:.6; cursor:default }&#10;    для визуального состояния заблокированной кнопки.&#10;&#10;requirements.txt не менялся.&#10;&#10;Файлы: app.py, index.html">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/gpon_state.json" beforeDir="false" afterPath="$PROJECT_DIR$/data/gpon_state.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/data/state.json" beforeDir="false" afterPath="$PROJECT_DIR$/data/state.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/templates/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/templates/index.html" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -32,6 +30,10 @@
     &quot;accountId&quot;: &quot;2465a757-646d-49bd-9dd0-9cf04623ae79&quot;
   }
 }</component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
   <component name="ProjectColorInfo">{
   &quot;customColor&quot;: &quot;&quot;,
   &quot;associatedIndex&quot;: 7
@@ -41,17 +43,18 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Python.app.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;Part-Two&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.app.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "Part-Two",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "settings.editor.selected.configurable": "preferences.pluginManager"
   }
-}</component>
+}]]></component>
   <component name="RunManager">
     <configuration name="app" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="VOLS" />
@@ -66,6 +69,8 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="true" />
+      <option name="RUN_TOOL" value="" />
       <option name="SCRIPT_NAME" value="$PROJECT_DIR$/app.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
@@ -77,6 +82,7 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.app" />
         <item itemvalue="Python.app" />
       </list>
     </recent_temporary>
