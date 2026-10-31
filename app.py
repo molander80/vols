@@ -6,11 +6,13 @@ import atexit
 import shutil
 import threading
 import zipfile
+import gzip
 import xml.etree.ElementTree as ET
 from flask import Flask, request, jsonify, render_template, send_file
 import simplekml
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256 МБ лимит загрузки
 BASE_DIR = os.path.dirname(__file__)
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -18,6 +20,41 @@ STATE_FILE = os.path.join(DATA_DIR, 'state.json')       # маршруты + п�
 GPON_FILE  = os.path.join(DATA_DIR, 'gpon_state.json')  # geo + onus + имена файлов
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+@app.after_request
+def _gzip_response(resp):
+    """Сжимает JSON/HTML-ответы через gzip, если клиент это поддерживает.
+
+    Значительно сокращает трафик для /gpon/state и /routes (большие JSON).
+    Бинарные ответы (send_file: KMZ/ZIP) не сжимаются — у них свой mimetype.
+    """
+    if resp.direct_passthrough:
+        return resp
+    accept = request.headers.get('Accept-Encoding', '')
+    if 'gzip' not in accept.lower():
+        return resp
+    ct = resp.content_type or ''
+    if not (ct.startswith('application/json') or ct.startswith('text/html')):
+        return resp
+    body = resp.get_data()
+    if len(body) < 512:  # не сжимаем мелочь
+        return resp
+    resp.set_data(gzip.compress(body))
+    resp.headers['Content-Encoding'] = 'gzip'
+    resp.headers['Content-Length'] = str(len(resp.get_data()))
+    resp.headers['Vary'] = 'Accept-Encoding'
+    return resp
+
+
+@app.after_request
+def _security_headers(resp):
+    """Добавляет базовые защитные заголовки ко всем ответам."""
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'no-referrer')
+    return resp
+
 
 # ============================ STATE (KMZ) ============================
 ROUTES = {}
@@ -129,6 +166,15 @@ def _touch_routes():
     _save_state()
 
 
+def _alloc_route_id():
+    """Атомарно выдаёт следующий свободный id маршрута."""
+    global _next_id
+    with _state_lock:
+        rid = _next_id
+        _next_id += 1
+        return rid
+
+
 # ============================ STATE (GPON) ============================
 # GPON-состояние живёт в памяти и персистится в data/gpon_state.json.
 # Оно полностью независимо от state.json.
@@ -180,6 +226,36 @@ def _save_gpon():
         _gpon_timer = threading.Timer(_GPON_DEBOUNCE_SEC, _save_gpon_flush)
         _gpon_timer.daemon = True
         _gpon_timer.start()
+
+
+# Отдельный, более длинный debounce для точечных правок geo-точек.
+# Перетаскивание маркера шлёт запрос на каждый шаг, а gpon_state.json
+# может весить мегабайты — перезаписывать его на каждый клик избыточно.
+_gpon_point_timer = None
+_GPON_POINT_DEBOUNCE_SEC = 3.0
+
+
+def _save_gpon_point_flush():
+    global _gpon_point_timer
+    with _gpon_lock:
+        _gpon_point_timer = None
+        _gpon_dirty = False
+    try:
+        _save_gpon_now()
+    except Exception as e:
+        print('gpon point flush error:', e)
+
+
+def _save_gpon_point():
+    """Ленивая запись после точечной правки geo (замедленный debounce)."""
+    global _gpon_dirty, _gpon_point_timer
+    with _gpon_lock:
+        _gpon_dirty = True
+        if _gpon_point_timer is not None:
+            return
+        _gpon_point_timer = threading.Timer(_GPON_POINT_DEBOUNCE_SEC, _save_gpon_point_flush)
+        _gpon_point_timer.daemon = True
+        _gpon_point_timer.start()
 
 
 def _flush_gpon_on_exit():
@@ -286,7 +362,6 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    global _next_id
     files = request.files.getlist('files[]')
     paths = request.form.getlist('paths[]')
     added = 0
@@ -302,11 +377,16 @@ def upload():
         tmp = os.path.join(UPLOAD_DIR, f'{_next_id}_{safe}')
         f.save(tmp)
         parsed = parse_route_file(tmp, ext)
+        if not parsed:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            continue
         multi = len(parsed) > 1
         base = os.path.splitext(fname)[0]
         for name, pts in parsed:
-            rid = _next_id
-            _next_id += 1
+            rid = _alloc_route_id()
             ROUTES[rid] = {
                 'id': rid,
                 'name': f'{base} — {name}' if multi else name,
@@ -405,7 +485,6 @@ def delete_route(rid):
 
 @app.route('/merge', methods=['POST'])
 def merge():
-    global _next_id
     data = request.get_json(force=True) or {}
     ids = data.get('ids', [])
     name = data.get('name', 'Объединённый маршрут')
@@ -416,7 +495,7 @@ def merge():
             pts.extend(r['points'])
     if not pts:
         return jsonify({'error': 'no points'}), 400
-    rid = _next_id; _next_id += 1
+    rid = _alloc_route_id()
     ROUTES[rid] = {
         'id': rid, 'name': name, 'branch': name,
         'folder': '', 'visible': True, 'points': pts,
@@ -608,9 +687,21 @@ def state_export():
                      as_attachment=True, download_name='state.json')
 
 
+def _validate_state_payload(payload):
+    """Проверяет структуру state.json. Возвращает None или строку ошибки."""
+    if not isinstance(payload, dict):
+        return 'state must be an object'
+    if 'routes' in payload and not isinstance(payload['routes'], list):
+        return 'routes must be a list'
+    if 'customFolders' in payload and not isinstance(payload['customFolders'], list):
+        return 'customFolders must be a list'
+    if 'next_id' in payload and not isinstance(payload['next_id'], int):
+        return 'next_id must be an int'
+    return None
+
+
 @app.route('/state/import', methods=['POST'])
 def state_import():
-    global _next_id
     f = request.files.get('file')
     if not f:
         return jsonify({'error': 'no file'}), 400
@@ -618,6 +709,9 @@ def state_import():
         payload = json.loads(f.read().decode('utf-8'))
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+    err = _validate_state_payload(payload)
+    if err:
+        return jsonify({'error': err}), 400
     with _state_lock:
         tmp = STATE_FILE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as out:
@@ -630,6 +724,35 @@ def state_import():
 
 
 # ============================ GPON PARTIAL SAVE ============================
+def _gpon_apply(changes: dict) -> str:
+    """Применяет частичные изменения к GPON-состоянию с валидацией типов.
+
+    Принимает словарь с любым подмножеством ключей {
+        'geo': dict, 'onus': list, 'geoFiles': list, 'vgFile': str|None
+    }. Возвращает строку ошибки или None при успехе.
+    """
+    if not isinstance(changes, dict):
+        return 'payload must be an object'
+    if 'geo' in changes:
+        if not isinstance(changes['geo'], dict):
+            return 'geo must be a dict'
+        GPON['geo'] = changes['geo']
+    if 'onus' in changes:
+        if not isinstance(changes['onus'], list):
+            return 'onus must be a list'
+        GPON['onus'] = changes['onus']
+    if 'geoFiles' in changes:
+        if not isinstance(changes['geoFiles'], list):
+            return 'geoFiles must be a list'
+        GPON['geoFiles'] = list(changes['geoFiles'])
+    if 'vgFile' in changes:
+        vf = changes['vgFile']
+        if vf is not None and not isinstance(vf, str):
+            return 'vgFile must be a string or null'
+        GPON['vgFile'] = vf
+    return None
+
+
 @app.route('/gpon/geo', methods=['POST'])
 def gpon_geo_save():
     """
@@ -637,13 +760,16 @@ def gpon_geo_save():
     Тело: { "geo": {...}, "geoFiles": [...] }
     """
     data = request.get_json(force=True, silent=True) or {}
-    if not isinstance(data.get('geo'), dict):
+    if 'geo' not in data:
         return jsonify({'error': 'geo must be dict'}), 400
+    changes = {'geo': data['geo']}
+    if 'geoFiles' in data:
+        changes['geoFiles'] = data.get('geoFiles') or []
 
     with _gpon_lock:
-        GPON['geo'] = data['geo']
-        if 'geoFiles' in data:
-            GPON['geoFiles'] = list(data.get('geoFiles') or [])
+        err = _gpon_apply(changes)
+    if err:
+        return jsonify({'error': err}), 400
     _save_gpon()
     return jsonify({'ok': True, 'geo': len(GPON['geo'])})
 
@@ -655,13 +781,16 @@ def gpon_onus_save():
     Тело: { "onus": [...], "vgFile": "..." }
     """
     data = request.get_json(force=True, silent=True) or {}
-    if not isinstance(data.get('onus'), list):
+    if 'onus' not in data:
         return jsonify({'error': 'onus must be list'}), 400
+    changes = {'onus': data['onus']}
+    if 'vgFile' in data:
+        changes['vgFile'] = data.get('vgFile')
 
     with _gpon_lock:
-        GPON['onus'] = data['onus']
-        if 'vgFile' in data:
-            GPON['vgFile'] = data.get('vgFile')
+        err = _gpon_apply(changes)
+    if err:
+        return jsonify({'error': err}), 400
     _save_gpon()
     return jsonify({'ok': True, 'onus': len(GPON['onus'])})
 
@@ -689,7 +818,7 @@ def gpon_geo_point_edit():
             'lng': lng,
             'address': data.get('address') or addr,
         }
-    _save_gpon()
+    _save_gpon_point()
     return jsonify({'ok': True, 'addr': addr, 'lat': lat, 'lng': lng})
 
 
@@ -703,26 +832,6 @@ def gpon_state_get():
             'geoFiles': GPON['geoFiles'],
             'vgFile': GPON['vgFile'],
         })
-
-
-@app.route('/gpon/state', methods=['POST'])
-def gpon_state_post():
-    data = request.get_json(force=True, silent=True) or {}
-    with _gpon_lock:
-        if 'geo' in data and isinstance(data['geo'], dict):
-            GPON['geo'] = data['geo']
-        if 'onus' in data and isinstance(data['onus'], list):
-            GPON['onus'] = data['onus']
-        if 'geoFiles' in data:
-            GPON['geoFiles'] = list(data.get('geoFiles') or [])
-        if 'vgFile' in data:
-            GPON['vgFile'] = data.get('vgFile')
-    _save_gpon()
-    return jsonify({
-        'ok': True,
-        'geo': len(GPON['geo']),
-        'onus': len(GPON['onus']),
-    })
 
 
 @app.route('/gpon/state', methods=['DELETE'])
@@ -744,6 +853,21 @@ def gpon_state_export():
                      as_attachment=True, download_name='gpon_state.json')
 
 
+def _validate_gpon_payload(payload):
+    """Проверяет структуру gpon_state.json. Возвращает None или строку ошибки."""
+    if not isinstance(payload, dict):
+        return 'gpon state must be an object'
+    if 'geo' in payload and not isinstance(payload['geo'], dict):
+        return 'geo must be an object'
+    if 'onus' in payload and not isinstance(payload['onus'], list):
+        return 'onus must be a list'
+    if 'geoFiles' in payload and not isinstance(payload['geoFiles'], list):
+        return 'geoFiles must be a list'
+    if 'vgFile' in payload and payload['vgFile'] is not None and not isinstance(payload['vgFile'], str):
+        return 'vgFile must be a string or null'
+    return None
+
+
 @app.route('/gpon/state/import', methods=['POST'])
 def gpon_state_import():
     f = request.files.get('file')
@@ -753,6 +877,9 @@ def gpon_state_import():
         payload = json.loads(f.read().decode('utf-8'))
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+    err = _validate_gpon_payload(payload)
+    if err:
+        return jsonify({'error': err}), 400
 
     with _gpon_lock:
         tmp = GPON_FILE + '.tmp'

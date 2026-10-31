@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Виртуальное окружение и IDE
+.idea/
+.vscode/
+.proxyai/
+.ai/
+
+# Данные приложения (персональные / большие, не в репозиторий)
+data/state.json
+data/gpon_state.json
+data/*.tmp
+uploads/
+uploads/tree/
+
+# Временные и системные файлы
+.DS_Store
+Thumbs.db

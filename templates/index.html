@@ -5,19 +5,19 @@
 <title>KMZ + GPON Viewer</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/markercluster/MarkerCluster.css">
+<link rel="stylesheet" href="/static/markercluster/MarkerCluster.Default.css">
 <style>
 :root{
   --bg:#0b1120; --panel:#111827; --panel-2:#0f172a; --line:#1f2a3f;
-  --text:#e2e8f0; --muted:#7c8aa5; --accent:#38bdf8;
+  --text:#e2e8f0; --muted:#9aa7bd; --accent:#38bdf8;
   --switch:#fbbf24; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
   --shadow:0 4px 20px rgba(0,0,0,.35);
 }
 [data-theme="light"]{
   --bg:#f7f9fc; --panel:#fff; --panel-2:#f1f5f9; --line:#e2e8f0;
-  --text:#0f172a; --muted:#64748b; --accent:#0284c7;
+  --text:#0f172a; --muted:#52607a; --accent:#0284c7;
   --ok:#15803d; --warn:#b45309; --err:#b91c1c;
   --shadow:0 4px 20px rgba(15,23,42,.08);
 }
@@ -59,6 +59,8 @@ button,input,select{font:inherit;color:inherit}
 .file-btn input{display:none}
 .file-btn.active{border-color:var(--accent);color:var(--accent)}
 
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
 .stats{display:flex;gap:12px;flex-wrap:wrap;align-items:center;
   margin-left:auto;color:var(--muted);font-size:12.5px;}
 .stat b{color:var(--text);font-weight:600}
@@ -85,7 +87,7 @@ button,input,select{font:inherit;color:inherit}
 .folder-toggle{width:12px;color:var(--muted);font-size:10px;text-align:center;cursor:pointer}
 .folder-cb{margin:0;cursor:pointer;accent-color:var(--accent)}
 .folder-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.folder-count{color:var(--muted);font-size:11px;margin-left:4px}
+.folder-count{color:var(--muted);font-size:12px;margin-left:4px}
 .folder-actions{display:none;margin-left:auto;gap:2px}
 .folder-row:hover .folder-actions{display:inline-flex}
 .folder-actions button{background:none;border:none;color:var(--text);cursor:pointer;
@@ -122,7 +124,7 @@ button,input,select{font:inherit;color:inherit}
   cursor:pointer;user-select:none;font-size:12.5px}
 .filter-item:hover{background:var(--panel)}
 .filter-item input{accent-color:var(--accent)}
-.filter-item .cnt{margin-left:auto;color:var(--muted);font-size:11.5px}
+.filter-item .cnt{margin-left:auto;color:var(--muted);font-size:12px}
 
 .filter-item.branch-highlight{
   background: rgba(56,189,248,.28);
@@ -150,7 +152,7 @@ button,input,select{font:inherit;color:inherit}
 .branch-group-head:hover{border-color:var(--accent);color:var(--accent)}
 .branch-group-head .toggle-g{display:inline-block;width:12px;text-align:center;color:var(--muted);font-size:11px}
 .branch-group-head .g-name{color:var(--accent);font-weight:700}
-.branch-group-head .g-cnt{margin-left:auto;color:var(--muted);font-size:11px;font-weight:500}
+.branch-group-head .g-cnt{margin-left:auto;color:var(--muted);font-size:12px;font-weight:500}
 .branch-group-list{padding-left:14px;border-left:1px dashed var(--line);margin-left:6px}
 .branch-group.collapsed .branch-group-list{display:none}
 
@@ -160,7 +162,7 @@ button,input,select{font:inherit;color:inherit}
 .branch-subgroup-head:hover{background:var(--panel)}
 .branch-subgroup-head .toggle-s{display:inline-block;width:12px;text-align:center;color:var(--muted);font-size:10px}
 .branch-subgroup-head .s-name{color:var(--switch);font-weight:600;word-break:break-all}
-.branch-subgroup-head .s-cnt{margin-left:auto;color:var(--muted);font-size:11px}
+.branch-subgroup-head .s-cnt{margin-left:auto;color:var(--muted);font-size:12px}
 .branch-subgroup-list{padding-left:14px;border-left:1px dashed var(--line);margin-left:6px}
 .branch-subgroup.collapsed .branch-subgroup-list{display:none}
 
@@ -170,13 +172,19 @@ button,input,select{font:inherit;color:inherit}
 .branch-subsub-head:hover{background:var(--panel)}
 .branch-subsub-head .toggle-ss{display:inline-block;width:12px;text-align:center;color:var(--muted);font-size:10px}
 .branch-subsub-head .ss-name{font-weight:500;word-break:break-all}
-.branch-subsub-head .ss-cnt{margin-left:auto;color:var(--muted);font-size:11px}
+.branch-subsub-head .ss-cnt{margin-left:auto;color:var(--muted);font-size:12px}
 .branch-subsub-list{padding-left:14px;border-left:1px dashed var(--line);margin-left:6px}
 .branch-subsub.collapsed .branch-subsub-list{display:none}
 
 .diag{background:var(--panel);border:1px solid var(--line);border-radius:8px;
   padding:8px 11px;margin-bottom:10px;font-family:ui-monospace,Consolas,monospace;
   font-size:11.5px;color:var(--muted);white-space:pre-wrap;line-height:1.5}
+
+.empty-state{text-align:center;color:var(--muted);font-size:13px;line-height:1.6;
+  padding:26px 16px;border:1px dashed var(--line);border-radius:10px;
+  margin:6px 0;background:var(--panel)}
+.empty-state .big{font-size:30px;display:block;margin-bottom:8px}
+.empty-state b{color:var(--text)}
 
 .onu-popup{font-size:12px;line-height:1.45;min-width:280px}
 .onu-popup b{color:var(--accent)}
@@ -294,12 +302,52 @@ button,input,select{font:inherit;color:inherit}
 .leaflet-popup-content-wrapper{background:var(--panel);color:var(--text);border:1px solid var(--line)}
 .leaflet-popup-tip{background:var(--panel);border:1px solid var(--line)}
 
+/* ---------- Дропзона (drag & drop) ---------- */
+.drop-overlay{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;
+  justify-content:center;background:rgba(11,17,32,.55);backdrop-filter:blur(2px);
+  pointer-events:none;opacity:0;transition:opacity .15s ease}
+.drop-overlay.visible{opacity:1}
+.drop-overlay .box{background:var(--panel);border:2px dashed var(--accent);
+  border-radius:16px;padding:34px 48px;text-align:center;color:var(--text);
+  font-size:15px;box-shadow:var(--shadow)}
+.drop-overlay .box .big{font-size:40px;display:block;margin-bottom:10px}
+.drop-overlay .box .sub{font-size:13px;color:var(--muted);margin-top:4px}
+
+/* ---------- Toast-уведомления ---------- */
+.toast-wrap{position:fixed;right:16px;bottom:16px;z-index:3000;display:flex;
+  flex-direction:column;gap:8px;pointer-events:none}
+.toast{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+  color:var(--text);padding:9px 14px;border-radius:8px;box-shadow:var(--shadow);
+  font-size:13px;max-width:340px;opacity:0;transform:translateY(8px);
+  transition:opacity .2s ease,transform .2s ease}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.ok{border-left-color:var(--ok)}
+.toast.err{border-left-color:var(--err)}
+
 .hidden{display:none!important}
 
-@media (max-width:860px){
-  .main{grid-template-columns:1fr;grid-template-rows:45% 55%}
-  .sidebar{border-right:none;border-bottom:1px solid var(--line)}
+@media (max-width:1200px){
+  .main{grid-template-columns:320px 1fr}
 }
+
+@media (max-width:860px){
+  .app{grid-template-rows:auto 1fr}
+  .main{grid-template-columns:1fr;grid-template-rows:minmax(0,45%) minmax(0,55%)}
+  .sidebar{border-right:none;border-bottom:1px solid var(--line)}
+  .topbar h1{font-size:14px}
+  .stats{display:none}
+  .input{min-width:0;flex:1}
+  #search{flex:1}
+}
+
+/* Тач-устройства без hover: показываем действия всегда */
+@media (hover:none){
+  .folder-actions,.route-actions{display:inline-flex!important;opacity:.85}
+}
+
+/* Доступность: видимый фокус с клавиатуры */
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button:focus-visible,.file-btn:focus-visible{border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -308,11 +356,11 @@ button,input,select{font:inherit;color:inherit}
     <h1>🌐 KMZ + GPON</h1>
 
     <div class="mode-switch" role="tablist">
-      <button id="modeKmz" class="active" data-mode="kmz">🗺️ Маршруты KMZ</button>
-      <button id="modeGpon" data-mode="gpon">📡 GPON</button>
+      <button id="modeKmz" class="active" data-mode="kmz" role="tab" aria-selected="true">🗺️ Маршруты KMZ</button>
+      <button id="modeGpon" data-mode="gpon" role="tab" aria-selected="false">📡 GPON</button>
     </div>
 
-    <div id="kmzControls" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <div id="kmzControls" class="controls">
       <button class="btn" id="btnUploadFiles">📂 KMZ</button>
       <button class="btn" id="btnUploadFolder">📁 Папка</button>
       <button class="btn" id="btnNewFolder">📁+</button>
@@ -322,7 +370,7 @@ button,input,select{font:inherit;color:inherit}
       <input type="file" id="folderInput" webkitdirectory multiple style="display:none">
     </div>
 
-    <div id="gponControls" style="display:none;gap:8px;flex-wrap:wrap;align-items:center">
+    <div id="gponControls" class="controls hidden">
       <label class="file-btn" id="fileGeoBtn">📂 Excel (geo*.xlsx)
         <input type="file" id="fileGeo" accept=".xlsx,.xls" multiple>
       </label>
@@ -333,12 +381,12 @@ button,input,select{font:inherit;color:inherit}
       <button class="btn" id="clear-gpon-data" title="Удалить сохранённые geo и vgroups">🗑 Очистить данные</button>
     </div>
 
-    <input class="input" id="search" placeholder="🔎 Поиск…">
-    <button class="btn icon" id="theme" title="Тема">🌙</button>
+    <input class="input" id="search" placeholder="🔎 Поиск…" aria-label="Поиск">
+    <button class="btn icon" id="theme" title="Тема" aria-label="Переключить тему">🌙</button>
 
-    <div class="iso-badge hidden" id="linkBadge" title="Связка KMZ ↔ GPON">
+    <div class="iso-badge hidden" id="linkBadge" title="Связка KMZ ↔ GPON" role="status">
       <span id="linkBadgeText"></span>
-      <button id="linkBadgeClear" title="Снять связку">✕</button>
+      <button id="linkBadgeClear" title="Снять связку" aria-label="Снять связку KMZ и GPON">✕</button>
     </div>
 
     <div class="stats">
@@ -371,9 +419,19 @@ button,input,select{font:inherit;color:inherit}
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<div class="drop-overlay" id="dropOverlay">
+  <div class="box">
+    <span class="big">📥</span>
+    Отпустите файлы для загрузки
+    <div class="sub">KMZ / KML — по одному, пачкой или папкой</div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="/static/leaflet/leaflet.js"></script>
+<script src="/static/markercluster/leaflet.markercluster.js"></script>
+<script src="/static/xlsx/xlsx.full.min.js"></script>
 
 <script>
 'use strict';
@@ -404,18 +462,31 @@ function patchRoutesBulk(ids, patch){
 
 const stripBOM = s => s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
 
+function showToast(msg, type='ok'){
+  const wrap = $('toastWrap');
+  if (!wrap) return;
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type === 'err' ? 'err' : 'ok');
+  el.textContent = msg;
+  wrap.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 220);
+  }, 2600);
+}
+
 /* ==========================================================================
    КАРТА
    ========================================================================== */
 const map = L.map('map', { preferCanvas:true, zoomControl:true }).setView([45.3,38.1], 6);
 
 const basemaps = {
+  'OSM Hot': L.tileLayer('https://tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', { maxZoom:19 }),
   'OSM DE': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', { maxZoom:19 }),
   'Esri Улицы': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom:19 }),
   'Esri Спутник': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom:19 }),
   'Esri Топо': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom:19 }),
-  'Carto Светлая': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom:19, subdomains:'abcd' }),
-  'Carto Тёмная': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19, subdomains:'abcd' }),
 };
 basemaps['OSM DE'].addTo(map);
 L.control.layers(basemaps, null, { position:'topright', collapsed:false }).addTo(map);
@@ -463,11 +534,13 @@ function setMode(mode){
   State.mode = mode;
 
   document.querySelectorAll('.mode-switch button').forEach(b => {
-    b.classList.toggle('active', b.dataset.mode === mode);
+    const on = b.dataset.mode === mode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
   });
 
-  $('kmzControls').style.display  = (mode === 'kmz')  ? 'flex' : 'none';
-  $('gponControls').style.display = (mode === 'gpon') ? 'flex' : 'none';
+  $('kmzControls').classList.toggle('hidden', mode !== 'kmz');
+  $('gponControls').classList.toggle('hidden', mode !== 'gpon');
 
   $('sidebarKmz').classList.toggle('hidden', mode !== 'kmz');
   $('sidebarGpon').classList.toggle('hidden', mode !== 'gpon');
@@ -793,6 +866,16 @@ function kmzRenderTree(){
   const c = $('folderTree');
   if (!c) return;
   c.innerHTML = '';
+
+  if (!K.routes.length){
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = '<span class="big">🗺️</span>Пока нет маршрутов.<br>' +
+      'Перетащите <b>KMZ/KML</b> сюда или нажмите <b>📂 KMZ</b>.';
+    c.appendChild(empty);
+    return;
+  }
+
   kmzRenderNode(kmzBuildTree(), c, [], true);
 
   if (K.linked && K.linked.type === 'route'){
@@ -1044,6 +1127,7 @@ function kmzBuildRouteRow(r){
     kmzRemoveLayer(r.id);
     kmzRenderTree();
     $('s-routes').textContent = K.routes.length;
+    showToast('Маршрут удалён');
   };
   li.appendChild(actions);
 
@@ -1238,8 +1322,14 @@ async function kmzUpload(files){
     fd.append('files[]', f, f.name);
     fd.append('paths[]', f.webkitRelativePath || f.name);
   }
-  await fetch('/upload', { method:'POST', body:fd });
+  const res = await fetch('/upload', { method:'POST', body:fd });
+  const data = await res.json().catch(() => ({}));
   await kmzLoadRoutes();
+  if (data.added > 0){
+    showToast(`Загружено маршрутов: ${data.added}`);
+  } else {
+    showToast('Маршруты не найдены в файлах', 'err');
+  }
 }
 
 /* ==========================================================================
@@ -1498,12 +1588,20 @@ function gponBranch(login){
   return p[0] + '/' + p[3] + '/' + p[4];
 }
 function gponStatusKey(s){
-  if (/Активна/i.test(s)) return 'active';
-  if (/Отключена/i.test(s)) return 'off';
-  if (/Заблокирована/i.test(s)) return 'block';
+  // Защита от нестрокового входа и нормализация
+  const t = String(s == null ? '' : s).toLowerCase();
+  if (!t) return 'other';
+  // Русские формулировки (активный/отключён/заблокирован в разных падежах)
+  if (/активн/.test(t)) return 'active';
+  if (/отключ|неактивн|отсутств|нет сигнала/.test(t)) return 'off';
+  if (/заблокир|блок|недостат|приостанов|заморож|не ?оплач|долг/.test(t)) return 'block';
+  // Английские/универсальные индикаторы как fallback
+  if (/active|online|up\b|вкл/.test(t)) return 'active';
+  if (/off|disabled|down\b|откл/.test(t)) return 'off';
+  if (/block|suspend|freeze|неоплач/.test(t)) return 'block';
   return 'other';
 }
-const GPON_STATUS_COLOR = { active:'#22c55e', off:'#94a3b8', block:'#ef4444', other:'#22c55e' };
+const GPON_STATUS_COLOR = { active:'#22c55e', off:'#94a3b8', block:'#ef4444', other:'#94a3b8' };
 const GPON_STATUS_CLASS = { active:'stat-active', off:'stat-off', block:'stat-block', other:'' };
 
 /* ==========================================================================
@@ -2505,6 +2603,7 @@ $('btnExport').onclick = async () => {
   const a = document.createElement('a');
   a.href = url; a.download = 'routes.kmz'; a.click();
   URL.revokeObjectURL(url);
+  showToast(`Экспортировано маршрутов: ${ids.length}`);
 };
 
 $('btnExportTree').onclick = async () => {
@@ -2540,6 +2639,7 @@ $('btnExportTree').onclick = async () => {
     a.download = 'routes_tree.zip';
     a.click();
     URL.revokeObjectURL(url);
+    showToast('Дерево выгружено');
   } catch(e){
     console.error('export_tree failed', e);
     alert('Не удалось выгрузить дерево: ' + e.message);
@@ -2550,15 +2650,23 @@ $('btnExportTree').onclick = async () => {
 };
 
 let dragCounter = 0;
+function dragOverlayShow(){
+  const o = $('dropOverlay'); if (o) o.classList.add('visible');
+}
+function dragOverlayHide(){
+  const o = $('dropOverlay'); if (o) o.classList.remove('visible');
+}
 window.addEventListener('dragenter', e => {
   if (State.mode !== 'kmz') return;
   if (K.dragPayload) return;
   if (!e.dataTransfer.types.includes('Files')) return;
   dragCounter++;
+  if (dragCounter === 1) dragOverlayShow();
 });
 window.addEventListener('dragleave', () => {
   if (State.mode !== 'kmz') return;
   dragCounter = Math.max(0, dragCounter - 1);
+  if (dragCounter === 0) dragOverlayHide();
 });
 window.addEventListener('dragover', e => {
   if (State.mode === 'kmz' && e.dataTransfer.types.includes('Files')) e.preventDefault();
@@ -2566,6 +2674,7 @@ window.addEventListener('dragover', e => {
 window.addEventListener('drop', async e => {
   if (State.mode !== 'kmz') return;
   if (K.dragPayload) return;
+  dragOverlayHide();
   e.preventDefault();
   dragCounter = 0;
   const items = [...(e.dataTransfer.items || [])];
