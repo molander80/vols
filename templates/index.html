@@ -5,9 +5,9 @@
 <title>KMZ + GPON Viewer</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/markercluster/MarkerCluster.css">
+<link rel="stylesheet" href="/static/markercluster/MarkerCluster.Default.css">
 <style>
 :root{
   --bg:#0b1120; --panel:#111827; --panel-2:#0f172a; --line:#1f2a3f;
@@ -372,9 +372,9 @@ button,input,select{font:inherit;color:inherit}
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="/static/leaflet/leaflet.js"></script>
+<script src="/static/markercluster/leaflet.markercluster.js"></script>
+<script src="/static/xlsx/xlsx.full.min.js"></script>
 
 <script>
 'use strict';
@@ -392,7 +392,7 @@ const CLS = {
 };
 
 const GPON_STATUS_COLOR = {
-  active: '#22c55e', off: '#94a3b8', block: '#ef4444', other: '#22c55e',
+  active: '#22c55e', off: '#94a3b8', block: '#ef4444', other: '#94a3b8',
 };
 const GPON_STATUS_CLASS = {
   active: 'stat-active', off: 'stat-off', block: 'stat-block', other: '',
@@ -1295,12 +1295,20 @@ const gponBranch = (login) => {
   return `${p[0]}/${p[3]}/${p[4]}`;
 };
 
-const gponStatusKey = (s) => {
-  if (/Активна/i.test(s)) return 'active';
-  if (/Отключена/i.test(s)) return 'off';
-  if (/Заблокирована/i.test(s)) return 'block';
+function gponStatusKey(s){
+  // Статусы приходят из CSV и могут быть null — приводим к строке
+  const t = String(s == null ? '' : s).toLowerCase();
+  if (!t) return 'other';
+  // Русские формулировки: «Активна», «Отключена», «Заблокирована …»
+  if (/активн/.test(t)) return 'active';
+  if (/отключ|неактивн|отсутств|нет сигнала/.test(t)) return 'off';
+  if (/заблокир|блок|недостат|приостанов|заморож|не ?оплач|долг/.test(t)) return 'block';
+  // Английские статусы как запасной вариант
+  if (/active|online|up\b|вкл/.test(t)) return 'active';
+  if (/off|disabled|down\b|откл/.test(t)) return 'off';
+  if (/block|suspend|freeze|неоплач/.test(t)) return 'block';
   return 'other';
-};
+}
 
 /* ==========================================================================
    GPON — SAVE / LOAD

@@ -5,6 +5,7 @@ KMZ + GPON Viewer — Flask-сервер.
 для geo + onus. Обе записи — с ленивым сохранением (debounce 0.8 с).
 """
 import atexit
+import gzip
 import io
 import json
 import re
@@ -50,7 +51,49 @@ GPON_FILE = os.path.join(DATA_DIR, 'gpon_state.json')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
-app = Flask(__name__, template_folder=resource_path('templates'))
+app = Flask(
+    __name__,
+    template_folder=resource_path('templates'),
+    static_folder=resource_path('static'),
+)
+# Лимит на размер загружаемого файла: без него /upload принимал что угодно
+app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256 МБ
+
+# Кириллица в JSON без \uXXXX: /gpon/state отдаёт мегабайты адресов,
+# экранирование раздувало ответ примерно в 2.2 раза
+app.json.ensure_ascii = False
+
+
+@app.after_request
+def _gzip_response(resp):
+    """Сжимает JSON/HTML-ответы gzip, если клиент это поддерживает.
+
+    Основная экономия — /gpon/state (несколько мегабайт JSON).
+    """
+    if resp.direct_passthrough:
+        return resp
+    if 'gzip' not in request.headers.get('Accept-Encoding', '').lower():
+        return resp
+    ct = resp.content_type or ''
+    if not (ct.startswith('application/json') or ct.startswith('text/html')):
+        return resp
+    body = resp.get_data()
+    if len(body) < 512:
+        return resp
+    resp.set_data(gzip.compress(body))
+    resp.headers['Content-Encoding'] = 'gzip'
+    resp.headers['Content-Length'] = str(len(resp.get_data()))
+    resp.headers['Vary'] = 'Accept-Encoding'
+    return resp
+
+
+@app.after_request
+def _security_headers(resp):
+    """Базовые защитные заголовки для всех ответов."""
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'no-referrer')
+    return resp
 
 
 # ============================ Debounced saver ============================
@@ -446,6 +489,13 @@ def upload():
         f.save(tmp)
 
         parsed = parse_route_file(tmp, ext)
+        if not parsed:
+            # файл не дал ни одного маршрута — не оставляем мусор в uploads/
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            continue
         multi = len(parsed) > 1
         base = os.path.splitext(fname)[0]
 
@@ -749,6 +799,8 @@ def _replace_state_file(path: str, payload: dict, cancel_pending, reload_fn):
 
 
 def _validate_routes_state(payload: dict):
+    if not isinstance(payload, dict):
+        return 'state must be an object'
     routes = payload.get('routes', [])
     if not isinstance(routes, list):
         return 'routes must be a list'
@@ -774,6 +826,8 @@ def _validate_routes_state(payload: dict):
 
 
 def _validate_gpon_state(payload: dict):
+    if not isinstance(payload, dict):
+        return 'state must be an object'
     geo = payload.get('geo')
     if geo is not None:
         if not isinstance(geo, dict):
