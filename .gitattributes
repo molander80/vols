@@ -1,0 +1,21 @@
+# Нормализация окончаний строк
+* text=auto
+
+# Исходники и текст — LF и в репозитории, и в рабочей копии
+*.py      text eol=lf
+*.html    text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.json    text eol=lf
+*.csv     text eol=lf
+*.kml     text eol=lf
+*.spec    text eol=lf
+*.bat     text eol=crlf
+
+# Бинарные форматы — без преобразований
+*.xlsx    binary
+*.xls     binary
+*.kmz     binary
+*.exe     binary
+*.png     binary
+*.jpg     binary
