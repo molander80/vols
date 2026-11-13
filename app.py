@@ -18,19 +18,30 @@ import simplekml
 import sys
 import os
 
-def resource_path(relative_path):
-    """ Возвращает абсолютный путь к ресурсу, работает и для dev, и для PyInstaller """
-    try:
-        # PyInstaller создает временную папку и сохраняет путь в _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
+def base_dir():
+    """
+    Каталог, рядом с которым живут data/ и uploads/.
 
-    return os.path.join(base_path, relative_path)
+    В onefile-сборке PyInstaller __file__ указывает внутрь временной папки
+    _MEIPASS, которая удаляется при выходе из программы, поэтому состояние
+    нужно хранить рядом с самим .exe. В dev-режиме — рядом с app.py.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
 
 # ============================ Paths / app ============================
 
-BASE_DIR = os.path.dirname(__file__)
+BASE_DIR = base_dir()
+
+
+def resource_path(relative_path):
+    """ Возвращает абсолютный путь к ресурсу, работает и для dev, и для PyInstaller """
+    # В сборке PyInstaller ресурсы лежат во временной папке _MEIPASS
+    base_path = getattr(sys, '_MEIPASS', None) or BASE_DIR
+    return os.path.join(base_path, relative_path)
+
+
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 STATE_FILE = os.path.join(DATA_DIR, 'state.json')
@@ -85,6 +96,14 @@ class DebouncedSaver:
             self._write()
         finally:
             with self._lock:
+                self._timer = None
+
+    def cancel(self):
+        """Отменяет отложенную запись (нужно при импорте состояния)."""
+        with self._lock:
+            self._dirty = False
+            if self._timer is not None:
+                self._timer.cancel()
                 self._timer = None
 
     def mark_dirty(self):
@@ -669,6 +688,121 @@ def folders_rename():
     return jsonify({'ok': True, 'folders': _routes.folders_list()})
 
 
+# ============================ JSON state import helpers ============================
+
+def _json_upload_payload(field: str = 'file'):
+    """Читает JSON из multipart-загрузки. Возвращает (payload, ready_response)."""
+    f = request.files.get(field)
+    if not f:
+        return None, (jsonify({'error': 'no file'}), 400)
+    try:
+        payload = json.loads(f.read().decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        return None, (jsonify({'error': f'bad json: {e}'}), 400)
+    if not isinstance(payload, dict):
+        return None, (jsonify({'error': 'json must be an object'}), 400)
+    return payload, None
+
+
+def _atomic_write_json(path: str, payload: dict):
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _replace_state_file(path: str, payload: dict, cancel_pending, reload_fn):
+    """
+    Заменяет файл состояния с бэкапом и откатом.
+
+    Возвращает None при успехе или ответ (jsonify, код) при ошибке, чтобы
+    на диске не остался нечитаемый файл.
+    """
+    backup = None
+    if os.path.exists(path):
+        backup = path + '.bak'
+        try:
+            shutil.copy2(path, backup)
+        except OSError as e:
+            print('import: backup failed:', e)
+            backup = None
+
+    # отложенная запись старого состояния не должна перетереть импорт
+    cancel_pending()
+    _atomic_write_json(path, payload)
+
+    try:
+        reload_fn()
+    except Exception as e:
+        print('import: reload failed:', e)
+        if backup:
+            try:
+                os.replace(backup, path)
+            except OSError as e2:
+                print('import: rollback failed:', e2)
+        try:
+            reload_fn()
+        except Exception:
+            pass
+        return jsonify({'error': f'import failed: {e}'}), 500
+    return None
+
+
+def _validate_routes_state(payload: dict):
+    routes = payload.get('routes', [])
+    if not isinstance(routes, list):
+        return 'routes must be a list'
+    for i, r in enumerate(routes):
+        if not isinstance(r, dict):
+            return f'routes[{i}] must be an object'
+        try:
+            int(r['id'])
+        except (KeyError, TypeError, ValueError):
+            return f'routes[{i}].id must be an integer'
+        if 'points' in r and not isinstance(r['points'], list):
+            return f'routes[{i}].points must be a list'
+        for key in ('name', 'folder'):
+            if key in r and not isinstance(r[key], str):
+                return f'routes[{i}].{key} must be a string'
+        if r.get('branch') is not None and not isinstance(r['branch'], str):
+            return f'routes[{i}].branch must be a string or null'
+
+    folders = payload.get('customFolders', [])
+    if not isinstance(folders, list) or any(not isinstance(x, str) for x in folders):
+        return 'customFolders must be a list of strings'
+    return None
+
+
+def _validate_gpon_state(payload: dict):
+    geo = payload.get('geo')
+    if geo is not None:
+        if not isinstance(geo, dict):
+            return 'geo must be an object'
+        for key, value in geo.items():
+            if not isinstance(value, dict):
+                return f'geo[{key!r}] must be an object'
+            for axis in ('lat', 'lng'):
+                try:
+                    float(value[axis])
+                except (KeyError, TypeError, ValueError):
+                    return f'geo[{key!r}].{axis} must be a number'
+
+    onus = payload.get('onus')
+    if onus is not None and not isinstance(onus, list):
+        return 'onus must be a list'
+
+    files = payload.get('geoFiles')
+    if files is not None and (
+        not isinstance(files, list) or any(not isinstance(x, str) for x in files)
+    ):
+        return 'geoFiles must be a list of strings'
+
+    vg = payload.get('vgFile')
+    if vg is not None and not isinstance(vg, str):
+        return 'vgFile must be a string'
+    return None
+
+
 # ============================ KMZ state export/import ============================
 
 @app.route('/state/export', methods=['GET'])
@@ -681,20 +815,18 @@ def state_export():
 
 @app.route('/state/import', methods=['POST'])
 def state_import():
-    f = request.files.get('file')
-    if not f:
-        return jsonify({'error': 'no file'}), 400
-    try:
-        payload = json.loads(f.read().decode('utf-8'))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    payload, error = _json_upload_payload()
+    if error:
+        return error
 
-    tmp = STATE_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as out:
-        json.dump(payload, out, ensure_ascii=False)
-    os.replace(tmp, STATE_FILE)
+    problem = _validate_routes_state(payload)
+    if problem:
+        return jsonify({'error': problem}), 400
 
-    _routes.load()
+    error = _replace_state_file(STATE_FILE, payload, _routes.saver.cancel, _routes.load)
+    if error:
+        return error
+
     return jsonify({
         'ok': True,
         'routes': len(_routes.all()),
@@ -777,20 +909,18 @@ def gpon_state_export():
 
 @app.route('/gpon/state/import', methods=['POST'])
 def gpon_state_import():
-    f = request.files.get('file')
-    if not f:
-        return jsonify({'error': 'no file'}), 400
-    try:
-        payload = json.loads(f.read().decode('utf-8'))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    payload, error = _json_upload_payload()
+    if error:
+        return error
 
-    tmp = GPON_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as out:
-        json.dump(payload, out, ensure_ascii=False)
-    os.replace(tmp, GPON_FILE)
+    problem = _validate_gpon_state(payload)
+    if problem:
+        return jsonify({'error': problem}), 400
 
-    _gpon.load()
+    error = _replace_state_file(GPON_FILE, payload, _gpon.saver.cancel, _gpon.load)
+    if error:
+        return error
+
     return jsonify({
         'ok': True,
         'geo': len(_gpon.geo),
@@ -806,4 +936,8 @@ _routes.load()
 _gpon.load()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    # В сборке PyInstaller отладчик и reloader только вредят: reloader
+    # запускает второй процесс с другим _MEIPASS, а Werkzeug-отладчик
+    # открывает интерактивное выполнение кода на локальном порту.
+    debug = not getattr(sys, 'frozen', False) and os.environ.get('VOLS_DEBUG') == '1'
+    app.run(debug=debug, host='127.0.0.1', port=5000)

@@ -431,7 +431,6 @@ const K = {
   layers: new Map(),
   hiddenBranches: new Set(),
   mergeMarked: new Set(),
-  isolationPrev: null,
   customFolders: new Set(),
   dragPayload: null,
   search: '',
@@ -517,6 +516,15 @@ function kmzStringToColor(str){
   return `hsl(${Math.abs(h) % 360}, 70%, 45%)`;
 }
 
+// Видимость маршрута на карте: сохранённое r.visible + режим просмотра.
+// Изоляция (K.linked) живёт только в памяти и на сервере не сохраняется.
+function kmzIsRouteShown(r){
+  if (!r.visible) return false;
+  if (K.linked && K.linked.id !== r.id) return false;
+  if (r.branch && K.hiddenBranches.has(r.branch)) return false;
+  return true;
+}
+
 function kmzSimplify(points, minDist = 3){
   if (points.length < 3) return points;
   const out = [points[0]];
@@ -580,7 +588,7 @@ function kmzAddLayersFor(routes){
     if (K.layers.has(r.id)) continue;
     const layer = kmzBuildLayer(r);
     K.layers.set(r.id, layer);
-    if (r.visible) layer.addTo(map);
+    if (kmzIsRouteShown(r)) layer.addTo(map);
     added++;
   }
   return added;
@@ -627,8 +635,7 @@ function kmzApplyFilters(){
     const layer = K.layers.get(r.id);
     if (!layer) continue;
 
-    let visible = r.visible;
-    if (r.branch && K.hiddenBranches.has(r.branch)) visible = false;
+    let visible = kmzIsRouteShown(r);
     if (q && !`${r.name} ${r.branch || ''} ${r.folder || ''}`.toLowerCase().includes(q)) visible = false;
 
     if (visible && !map.hasLayer(layer)) layer.addTo(map);
@@ -1148,42 +1155,19 @@ function gponHighlightLinkedBranches(){
   }
 }
 
-function kmzRestoreFromLinked(){
-  const prev = K.isolationPrev || {};
-  const toShow = [];
-  for (const rr of K.routes){
-    const wasVisible = !!prev[rr.id];
-    if (rr.visible !== wasVisible) rr.visible = wasVisible;
-    if (wasVisible) toShow.push(rr.id);
-  }
-  K.isolationPrev = null;
-  kmzApplyFilters();
-  if (toShow.length) patchRoutesBulk(toShow, { visible: true });
-}
-
 function kmzLinkRoute(routeId){
   const r = K.routes.find(x => x.id === routeId);
   if (!r) return;
 
   if (K.linked?.id === routeId){ kmzClearLink(); return; }
-  if (K.linked) kmzRestoreFromLinked();
+  if (K.linked) kmzClearLink();
 
   const key = r.branch || r.name;
   K.linked = { type: 'route', id: r.id, key, folder: r.folder || '' };
 
-  K.isolationPrev = {};
-  for (const rr of K.routes) K.isolationPrev[rr.id] = !!rr.visible;
-
-  const toHide = [];
-  for (const rr of K.routes){
-    const want = (rr.id === r.id);
-    if (rr.visible !== want) rr.visible = want;
-    if (!want) toHide.push(rr.id);
-  }
-
+  // Изоляция — режим просмотра: r.visible на сервере не трогаем, иначе
+  // клик по линии переписывает сохранённые данные всех маршрутов.
   kmzApplyFilters();
-  if (toHide.length) patchRoutesBulk(toHide, { visible: false });
-  patchRoutesBulk([r.id], { visible: true });
 
   kmzUpdateLinkBadge();
   gponApplyKmzLinkFilter();
@@ -1210,8 +1194,8 @@ function kmzLinkRoute(routeId){
 
 function kmzClearLink(){
   if (!K.linked) return;
-  kmzRestoreFromLinked();
   K.linked = null;
+  kmzApplyFilters();
 
   const tree = $('folderTree');
   if (tree){

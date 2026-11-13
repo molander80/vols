@@ -1,1 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# Рабочие данные: личные данные абонентов и состояние проекта не коммитим
+data/
+uploads/
+*.json.bak
+
+# IDE и инструменты
 .idea/
+.vscode/
+.proxyai/
+
+# Логи и окружение
+*.log
+logs/
+.env
