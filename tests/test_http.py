@@ -73,6 +73,17 @@ raw = client.get('/gpon/state').data
 check('экономия не меньше 5x', len(r.data) * 5 < len(raw),
       f'{len(r.data)} vs {len(raw)} байт')
 
+print('6) app.js вынесен из шаблона и статика кэшируется')
+r = client.get('/static/app.js')
+check('/static/app.js отдаётся', r.status_code == 200 and len(r.data) > 50_000,
+      f'{r.status_code}, {len(r.data)} байт')
+check('app.js с no-cache', r.headers.get('Cache-Control') == 'no-cache',
+      r.headers.get('Cache-Control'))
+check('HTML ссылается на /static/app.js', '/static/app.js' in html)
+r = client.get('/static/leaflet/leaflet.js')
+check('вендорная статика в кэше', 'max-age=2592000' in (r.headers.get('Cache-Control') or ''),
+      r.headers.get('Cache-Control'))
+
 print()
 if failures:
     print('FAILED:', len(failures))

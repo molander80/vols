@@ -1,6 +1,6 @@
 /* Smoke-тест клиентской функции gponStatusKey (из templates/index.html).
 
-   Извлекает тело функции прямо из HTML и проверяет маппинг статусов
+   Извлекает тело функции из static/app.js и проверяет маппинг статусов
    на ключи active/off/block/other. Запуск (нужен node >= 14):
 
        node tests/test_gpon_status.js
@@ -11,14 +11,14 @@
 const fs = require('fs');
 const path = require('path');
 
-const htmlPath = path.join(__dirname, '..', 'templates', 'index.html');
-const html = fs.readFileSync(htmlPath, 'utf8');
+const srcPath = path.join(__dirname, '..', 'static', 'app.js');
+const html = fs.readFileSync(srcPath, 'utf8');
 
 // Извлекаем тело функции gponStatusKey (от 'function gponStatusKey' до парной '}')
 const marker = 'function gponStatusKey(';
 const start = html.indexOf(marker);
 if (start === -1) {
-  console.error('gponStatusKey not found in index.html');
+  console.error('gponStatusKey not found in static/app.js');
   process.exit(1);
 }
 

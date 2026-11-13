@@ -5,6 +5,7 @@ KMZ + GPON Viewer — Flask-сервер.
 для geo + onus. Обе записи — с ленивым сохранением (debounce 0.8 с).
 """
 import atexit
+import copy
 import gzip
 import io
 import json
@@ -96,6 +97,19 @@ def _security_headers(resp):
     return resp
 
 
+@app.after_request
+def _static_cache_headers(resp):
+    """Кэш статики: вендорные библиотеки надолго, код приложения — нет."""
+    path = request.path
+    if not path.startswith('/static/'):
+        return resp
+    if path == '/static/app.js':
+        resp.headers['Cache-Control'] = 'no-cache'
+    else:
+        resp.headers['Cache-Control'] = 'public, max-age=2592000'
+    return resp
+
+
 # ============================ Debounced saver ============================
 
 class DebouncedSaver:
@@ -114,15 +128,19 @@ class DebouncedSaver:
         self.payload_fn = payload_fn
         self.debounce_sec = debounce_sec
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._dirty = False
         self._timer = None
 
     def _write(self):
-        tmp = self.path + '.tmp'
-        payload = self.payload_fn()
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        # таймер и save_now могут прийти одновременно — пишем строго по
+        # очереди, иначе два потока делят один .tmp и файл получается битым
+        with self._write_lock:
+            tmp = self.path + '.tmp'
+            payload = self.payload_fn()
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(tmp, self.path)
 
     def save_now(self):
         with self._lock:
@@ -174,10 +192,12 @@ class RoutesStore:
     # --- payload ---
     def _payload(self):
         with self._lock:
+            # глубокая копия: json.dump идёт уже без лока, а маршруты
+            # может править параллельный запрос
             return {
                 'next_id': self._next_id,
                 'customFolders': sorted(self.custom_folders),
-                'routes': list(self.routes.values()),
+                'routes': copy.deepcopy(list(self.routes.values())),
             }
 
     def load(self):
@@ -266,15 +286,77 @@ class RoutesStore:
     def folder_rename(self, old, new):
         with self._lock:
             self.custom_folders = {
-                (new if f == old else new + f[len(old):]) if f.startswith(old) else f
+                (new if f == old else new + f[len(old):])
+                if f == old or f.startswith(old + '/') else f
                 for f in self.custom_folders
             }
+
+    def folder_move(self, old: str, new: str) -> int:
+        """Переносит папку old вместе с вложенными в new одним действием.
+
+        Возвращает число перемещённых маршрутов. new == '' — в корень.
+        """
+        with self._lock:
+            moved = 0
+            for r in self.routes.values():
+                folder = r.get('folder') or ''
+                if folder == old or folder.startswith(old + '/'):
+                    tail = folder[len(old):].lstrip('/')
+                    r['folder'] = f'{new}/{tail}' if new and tail else (new or tail)
+                    moved += 1
+
+            folders = set()
+            for f in self.custom_folders:
+                if f == old or f.startswith(old + '/'):
+                    tail = f[len(old):].lstrip('/')
+                    target = f'{new}/{tail}' if new and tail else (new or tail)
+                    if target:
+                        folders.add(target)
+                else:
+                    folders.add(f)
+            self.custom_folders = folders
+            return moved
 
 
 _routes = RoutesStore()
 
 
 # ============================ GPON store ============================
+
+# Поля ONU, которые действительно нужно хранить. lat/lng и _statusKey
+# выводятся на клиенте из geo и статуса, поэтому в файле это дубли:
+# у 8713 ONU они дают сотни килобайт лишнего веса.
+_ONU_FIELDS = ('id', 'login', 'address', 'status', 'branch')
+
+
+def _slim_onu(o):
+    if not isinstance(o, dict):
+        return None
+    return {k: o.get(k) for k in _ONU_FIELDS}
+
+
+def _slim_onus(onus):
+    return [x for x in (_slim_onu(o) for o in onus) if x is not None]
+
+
+def _slim_geo(geo):
+    """Оставляет в geo только координаты.
+
+    Ключ и так является нормализованным адресом, а строка адреса для
+    отображения берётся из ONU — хранить её копию в geo избыточно.
+    """
+    if not isinstance(geo, dict):
+        return {}
+    out = {}
+    for key, value in geo.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            out[key] = {'lat': float(value['lat']), 'lng': float(value['lng'])}
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
 
 class GponStore:
     """geo + onus + имена файлов."""
@@ -307,8 +389,8 @@ class GponStore:
             print('gpon state load error:', e)
             return
         with self._lock:
-            self.geo = payload.get('geo') or {}
-            self.onus = payload.get('onus') or []
+            self.geo = _slim_geo(payload.get('geo') or {})
+            self.onus = _slim_onus(payload.get('onus') or [])
             self.geo_files = payload.get('geoFiles') or []
             self.vg_file = payload.get('vgFile')
 
@@ -324,27 +406,32 @@ class GponStore:
 
     # --- updates ---
     def set_geo(self, geo: dict, files=None):
+        clean = _slim_geo(geo)
         with self._lock:
-            self.geo = geo
+            self.geo = clean
             if files is not None:
                 self.geo_files = list(files)
 
     def set_onus(self, onus: list, vg_file=None):
+        clean = _slim_onus(onus)
         with self._lock:
-            self.onus = onus
+            self.onus = clean
             if vg_file is not None:
                 self.vg_file = vg_file
 
     def set_geo_point(self, addr: str, lat: float, lng: float, display: str):
+        # display оставлен в сигнатуре для совместимости, но в файл не пишется
         with self._lock:
-            self.geo[addr] = {'lat': lat, 'lng': lng, 'address': display}
+            self.geo[addr] = {'lat': lat, 'lng': lng}
 
     def snapshot(self):
+        # копия под локом: jsonify сериализует уже без блокировки,
+        # иначе параллельная правка координаты ломает ответ
         with self._lock:
             return {
-                'geo': self.geo,
-                'onus': self.onus,
-                'geoFiles': self.geo_files,
+                'geo': copy.deepcopy(self.geo),
+                'onus': copy.deepcopy(self.onus),
+                'geoFiles': list(self.geo_files),
                 'vgFile': self.vg_file,
             }
 
@@ -736,6 +823,24 @@ def folders_rename():
     _routes.folder_rename(old, new)
     _routes.touch()
     return jsonify({'ok': True, 'folders': _routes.folders_list()})
+
+
+@app.route('/folders/move', methods=['POST'])
+def folders_move():
+    """Переносит папку со всем содержимым одним запросом вместо N+1 PATCH."""
+    data = request.get_json(force=True, silent=True) or {}
+    old = (data.get('old') or '').strip().strip('/')
+    new = (data.get('new') or '').strip().strip('/')
+
+    if not old:
+        return jsonify({'error': 'empty old'}), 400
+    if new == old or new.startswith(old + '/'):
+        return jsonify({'error': 'bad target'}), 400
+
+    moved = _routes.folder_move(old, new)
+    if moved:
+        _routes.touch()
+    return jsonify({'ok': True, 'routes': moved, 'folders': _routes.folders_list()})
 
 
 # ============================ JSON state import helpers ============================
