@@ -24,3 +24,7 @@ uploads/
 *.log
 logs/
 .env
+
+# Собранный exe в корне и временные каталоги onefile
+/*.exe
+_MEI*/
