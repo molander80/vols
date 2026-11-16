@@ -84,6 +84,10 @@ def _reject_cross_site():
         host = request.host_url.rstrip('/')
         if origin.rstrip('/') != host:
             return jsonify({'error': 'cross-site request blocked'}), 403
+
+    # тело, отправленное как text/plain или форма, — типичный обход preflight
+    if request.content_length and request.mimetype != 'multipart/form-data' and not request.is_json:
+        return jsonify({'error': 'content-type must be application/json'}), 415
     return None
 
 
