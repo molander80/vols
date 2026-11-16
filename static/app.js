@@ -512,7 +512,9 @@ function kmzBuildRouteRow(r){
   };
   actions.querySelector('[data-act="geom"]').onclick = e => {
     e.stopPropagation();
-    kmzGeomBegin(r.id);
+    // повторное нажатие на том же маршруте сохраняет правку
+    if (K.editGeom && K.editGeom.id === r.id) kmzGeomSave();
+    else kmzGeomBegin(r.id);
   };
   actions.querySelector('[data-act="rename"]').onclick = async () => {
     const nn = prompt('Новое имя:', r.name);
