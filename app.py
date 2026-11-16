@@ -205,6 +205,40 @@ class DebouncedSaver:
 
 # ============================ Routes store ============================
 
+def _points_to_segments(points):
+    """Полилиния -> цепочка отрезков."""
+    return [[points[i], points[i + 1]] for i in range(len(points) - 1)]
+
+
+def _route_segments(route):
+    """Геометрия маршрута как список отрезков.
+
+    Новый формат — route['segments'] (сеть отрезков); старый ('points' —
+    одна полилиния) конвертируется в цепочку.
+    """
+    segs = route.get('segments')
+    if isinstance(segs, list) and segs:
+        return segs
+    pts = route.get('points') or []
+    if not isinstance(pts, list) or len(pts) < 2:
+        return []
+    return _points_to_segments(pts)
+
+
+def _flatten_points(segments):
+    """Уникальные вершины всех отрезков — для габаритов и совместимости."""
+    out, seen = [], set()
+    for seg in segments or []:
+        for p in seg:
+            if not isinstance(p, (list, tuple)) or len(p) < 2:
+                continue
+            key = (round(float(p[0]), 7), round(float(p[1]), 7))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append([float(p[0]), float(p[1])])
+    return out
+
 class RoutesStore:
     """Маршруты KMZ + пользовательские папки."""
 
@@ -249,7 +283,7 @@ class RoutesStore:
                     'branch': r.get('branch'),
                     'folder': r.get('folder', ''),
                     'visible': bool(r.get('visible', True)),
-                    'points': r.get('points', []),
+                    'segments': _route_segments(r),
                 }
             self.custom_folders = set(payload.get('customFolders', []))
             self._next_id = int(payload.get(
@@ -279,7 +313,7 @@ class RoutesStore:
         with self._lock:
             self.routes[route['id']] = route
 
-    def patch(self, rid, data: dict, allowed=('name', 'branch', 'folder', 'visible', 'points')):
+    def patch(self, rid, data: dict, allowed=('name', 'branch', 'folder', 'visible', 'segments')):
         with self._lock:
             r = self.routes.get(rid)
             if not r:
@@ -570,8 +604,16 @@ def _tree_route_relative_path(r: dict) -> str:
 def _write_route_kmz_to_file(r: dict, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     kml = simplekml.Kml()
-    ls = kml.newlinestring(name=r.get('name') or '')
-    ls.coords = [(p[1], p[0]) for p in r.get('points', [])]
+    segments = r.get('segments') or []
+    name = r.get('name') or ''
+    if len(segments) <= 1:
+        ls = kml.newlinestring(name=name)
+        ls.coords = [(p[1], p[0]) for p in (segments[0] if segments else [])]
+    else:
+        mg = kml.newmultigeometry(name=name)
+        for seg in segments:
+            ls = mg.newlinestring()
+            ls.coords = [(p[1], p[0]) for p in seg]
     kml.savekmz(path)
 
 
@@ -620,7 +662,7 @@ def upload():
                 'branch': None,
                 'folder': folder,
                 'visible': True,
-                'points': pts,
+                'segments': _points_to_segments(pts),
             })
             added += 1
 
@@ -658,6 +700,32 @@ def _validate_points(points):
     return clean, None
 
 
+def _validate_segments(segments):
+    """Проверяет геометрию-сеть: список отрезков [[lat, lon], [lat, lon]]."""
+    if not isinstance(segments, list):
+        return None, 'segments must be a list'
+    if not 1 <= len(segments) <= POINT_LIMIT:
+        return None, f'segments must contain 1..{POINT_LIMIT} items'
+
+    clean = []
+    for i, seg in enumerate(segments):
+        if not isinstance(seg, (list, tuple)) or len(seg) != 2:
+            return None, f'segments[{i}] must be [[lat, lon], [lat, lon]]'
+        pair = []
+        for j, p in enumerate(seg):
+            if not isinstance(p, (list, tuple)) or len(p) < 2:
+                return None, f'segments[{i}][{j}] must be [lat, lon]'
+            try:
+                lat, lng = float(p[0]), float(p[1])
+            except (TypeError, ValueError):
+                return None, f'segments[{i}][{j}] must contain numbers'
+            if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+                return None, f'segments[{i}][{j}] out of range'
+            pair.append([lat, lng])
+        clean.append(pair)
+    return clean, None
+
+
 @app.route('/routes', methods=['POST'])
 def routes_create():
     """Создаёт маршрут, нарисованный на карте."""
@@ -669,7 +737,12 @@ def routes_create():
     if branch is not None and not isinstance(branch, str):
         return jsonify({'error': 'branch must be a string or null'}), 400
 
-    points, error = _validate_points(data.get('points'))
+    error = None
+    if 'segments' in data:
+        segments, error = _validate_segments(data['segments'])
+    else:
+        points, error = _validate_points(data.get('points'))
+        segments = _points_to_segments(points) if points else None
     if error:
         return jsonify({'error': error}), 400
 
@@ -680,7 +753,7 @@ def routes_create():
         'branch': branch,
         'folder': folder,
         'visible': True,
-        'points': points,
+        'segments': segments,
     }
     _routes.put(route)
     _routes.touch()
@@ -690,12 +763,17 @@ def routes_create():
 @app.route('/route/<int:rid>', methods=['PATCH'])
 def patch_route(rid):
     data = request.get_json() or {}
-    if 'points' in data:
-        # правка геометрии с карты: координаты проверяются так же, как при создании
+    if 'segments' in data:
+        segments, error = _validate_segments(data['segments'])
+        if error:
+            return jsonify({'error': error}), 400
+        data = dict(data, segments=segments)
+    elif 'points' in data:
+        # совместимость: полилиния превращается в цепочку отрезков
         points, error = _validate_points(data['points'])
         if error:
             return jsonify({'error': error}), 400
-        data = dict(data, points=points)
+        data = dict(data, segments=_points_to_segments(points))
     r = _routes.patch(rid, data)
     if r is None:
         return jsonify({'error': 'not found'}), 404
@@ -767,19 +845,19 @@ def merge():
     ids = data.get('ids', [])
     name = data.get('name', 'Объединённый маршрут')
 
-    pts = []
+    segments = []
     for rid in ids:
         r = _routes.get(rid)
         if r:
-            pts.extend(r['points'])
+            segments.extend(r.get('segments') or [])
 
-    if not pts:
-        return jsonify({'error': 'no points'}), 400
+    if not segments:
+        return jsonify({'error': 'no segments'}), 400
 
     rid = _routes.new_id()
     _routes.put({
         'id': rid, 'name': name, 'branch': name,
-        'folder': '', 'visible': True, 'points': pts,
+        'folder': '', 'visible': True, 'segments': segments,
     })
     for old in ids:
         _routes.pop(old)
@@ -806,8 +884,15 @@ def export():
             )
         else:
             container = kml
-        ls = container.newlinestring(name=r['name'])
-        ls.coords = [(p[1], p[0]) for p in r['points']]
+        segments = r.get('segments') or []
+        if len(segments) == 1:
+            ls = container.newlinestring(name=r['name'])
+            ls.coords = [(p[1], p[0]) for p in segments[0]]
+        elif segments:
+            mg = container.newmultigeometry(name=r['name'])
+            for seg in segments:
+                ls = mg.newlinestring()
+                ls.coords = [(p[1], p[0]) for p in seg]
 
     buf = io.BytesIO()
     kml.savekmz(buf)
@@ -1002,6 +1087,10 @@ def _validate_routes_state(payload: dict):
             int(r['id'])
         except (KeyError, TypeError, ValueError):
             return f'routes[{i}].id must be an integer'
+        if 'segments' in r:
+            _, seg_err = _validate_segments(r['segments'])
+            if seg_err:
+                return f'routes[{i}].{seg_err}'
         if 'points' in r and not isinstance(r['points'], list):
             return f'routes[{i}].points must be a list'
         for key in ('name', 'folder'):

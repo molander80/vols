@@ -209,6 +209,15 @@ class TestRoutesValidation(unittest.TestCase):
         self.assertIsNotNone(app._validate_routes_state({'routes': [], 'customFolders': 'x'}))
 
 
+    def test_valid_segments(self):
+        payload = {'routes': [{'id': 1, 'segments': [[[45.0, 38.0], [45.1, 38.1]]]}]}
+        self.assertIsNone(app._validate_routes_state(payload))
+
+    def test_bad_segments(self):
+        payload = {'routes': [{'id': 1, 'segments': [[[45.0, 38.0]]]}]}
+        self.assertIsNotNone(app._validate_routes_state(payload))
+
+
 class TestGponValidation(unittest.TestCase):
     def test_valid_payload(self):
         payload = {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}

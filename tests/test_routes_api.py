@@ -1,4 +1,4 @@
-"""Проверки API создания маршрута (кнопка «Нарисовать»).
+"""Проверки API маршрутов: сеть отрезков (segments) и совместимость с points.
 
 Запуск из корня проекта:
     python tests/test_routes_api.py
@@ -30,6 +30,9 @@ with server._routes._lock:
 client = server.app.test_client()
 failures = []
 
+SEG1 = [[[45.0, 38.0], [45.1, 38.1]]]
+SEG2 = [[[45.0, 38.0], [45.1, 38.1]], [[45.1, 38.1], [45.2, 38.2]]]
+
 
 def check(name, cond, detail=''):
     print(('  OK  ' if cond else ' FAIL ') + name + (f'  [{detail}]' if detail else ''))
@@ -37,89 +40,93 @@ def check(name, cond, detail=''):
         failures.append(name)
 
 
-print('1) создание маршрута')
-r = client.post('/routes', json={'name': 'Нарисованный', 'points': [[45.0, 38.0], [45.1, 38.1]]})
+print('1) создание маршрута-сети')
+r = client.post('/routes', json={'name': 'Сеть', 'segments': SEG2})
 body = r.get_json()
 check('201', r.status_code == 201, r.status_code)
 check('id выдан', body.get('id') == 1, body.get('id'))
-check('имя сохранено', body.get('name') == 'Нарисованный', body.get('name'))
-check('точки сохранены', body.get('points') == [[45.0, 38.0], [45.1, 38.1]], body.get('points'))
-check('маршрут видим', body.get('visible') is True)
+check('имя сохранено', body.get('name') == 'Сеть', body.get('name'))
+check('отрезки сохранены', body.get('segments') == SEG2, body.get('segments'))
+check('в ответе нет points', 'points' not in body, sorted(body.keys()))
 check('GET /routes содержит его', len(client.get('/routes').get_json()) == 1)
 
-print('2) значения по умолчанию')
-r = client.post('/routes', json={'points': [[45.0, 38.0], [45.1, 38.1]]})
+print('2) значения по умолчанию и папка')
+r = client.post('/routes', json={'segments': SEG1})
 body = r.get_json()
 check('имя по умолчанию', body.get('name') == 'Новый маршрут', body.get('name'))
 check('id увеличился', body.get('id') == 2, body.get('id'))
-r = client.post('/routes', json={'name': 'В папке', 'folder': '/Голова 1/ветка/', 'points': [[45, 38], [45.1, 38.1]]})
+r = client.post('/routes', json={'name': 'В папке', 'folder': '/Голова 1/ветка/', 'segments': SEG1})
 body = r.get_json()
 check('папка нормализована', body.get('folder') == 'Голова 1/ветка', body.get('folder'))
 
-print('3) валидация точек')
+print('3) совместимость: points превращаются в цепочку отрезков')
+r = client.post('/routes', json={'name': 'Из полилинии',
+                                 'points': [[45.0, 38.0], [45.1, 38.1], [45.2, 38.2]]})
+body = r.get_json()
+check('points -> segments', body.get('segments') == SEG2, body.get('segments'))
+
+print('4) валидация')
 bad = [
-    ('нет points', {}),
-    ('одна точка', {'points': [[45.0, 38.0]]}),
-    ('points не список', {'points': 'nope'}),
-    ('точка не пара', {'points': [[45.0], [45.1, 38.1]]}),
-    ('не числа', {'points': [['a', 'b'], ['c', 'd']]}),
-    ('широта вне диапазона', {'points': [[100.0, 38.0], [45.1, 38.1]]}),
-    ('долгота вне диапазона', {'points': [[45.0, 200.0], [45.1, 38.1]]}),
-    ('branch не строка', {'points': [[45, 38], [45.1, 38.1]], 'branch': 5}),
+    ('нет геометрии', {}),
+    ('пустой segments', {'segments': []}),
+    ('segments не список', {'segments': 'nope'}),
+    ('отрезок не из двух точек', {'segments': [[[45.0, 38.0]]]}),
+    ('не числа', {'segments': [[['a', 'b'], ['c', 'd']]]}),
+    ('широта вне диапазона', {'segments': [[[100.0, 38.0], [45.0, 38.0]]]}),
+    ('долгота вне диапазона', {'segments': [[[45.0, 200.0], [45.1, 38.1]]]}),
+    ('points: одна точка', {'points': [[45.0, 38.0]]}),
+    ('branch не строка', {'segments': SEG1, 'branch': 5}),
 ]
 for name, payload in bad:
     r = client.post('/routes', json=payload)
     check(f'{name} -> 400', r.status_code == 400, r.get_json())
 
-print('4) сохранение на диск')
+print('5) сохранение на диск')
 server._routes.saver.flush()
 with open(server.STATE_FILE, encoding='utf-8') as f:
     saved = json.load(f)
-check('в файле 3 маршрута', len(saved.get('routes', [])) == 3, len(saved.get('routes', [])))
-check('next_id на диске', saved.get('next_id') == 4, saved.get('next_id'))
-
-print('5) координаты приводятся к float')
-r = client.post('/routes', json={'name': 'Int', 'points': [[45, 38], [46, 39]]})
-check('целые стали float', r.get_json()['points'] == [[45.0, 38.0], [46.0, 39.0]],
-      r.get_json()['points'])
+check('в файле 4 маршрута', len(saved.get('routes', [])) == 4, len(saved.get('routes', [])))
+check('next_id на диске', saved.get('next_id') == 5, saved.get('next_id'))
+check('у всех маршрутов segments, без points',
+      all('segments' in r and 'points' not in r for r in saved['routes']))
 
 print('6) правка геометрии через PATCH /route/<id>')
-new_points = [[45.5, 38.5], [45.6, 38.6], [45.7, 38.7]]
-r = client.patch('/route/1', json={'points': new_points})
+r = client.patch('/route/1', json={'segments': SEG1})
 body = r.get_json()
 check('200', r.status_code == 200, r.status_code)
-check('точки заменены', body.get('points') == new_points, body.get('points'))
-check('имя не изменилось', body.get('name') == 'Нарисованный', body.get('name'))
-check('GET /routes отражает правку',
-      client.get('/routes').get_json()[0]['points'] == new_points)
+check('отрезки заменены', body.get('segments') == SEG1, body.get('segments'))
+check('имя не изменилось', body.get('name') == 'Сеть', body.get('name'))
 
 for name, payload in [
-    ('одна точка', {'points': [[45.0, 38.0]]}),
-    ('не числа', {'points': [['a', 'b'], ['c', 'd']]}),
-    ('вне диапазона', {'points': [[45.0, 200.0], [45.1, 38.1]]}),
+    ('пустой segments', {'segments': []}),
+    ('не числа', {'segments': [[['a', 'b'], ['c', 'd']]]}),
+    ('вне диапазона', {'segments': [[[45.0, 200.0], [45.1, 38.1]]]}),
 ]:
     r = client.patch('/route/1', json=payload)
     check(f'{name} -> 400', r.status_code == 400, r.get_json())
-check('после отказов точки целы',
-      client.get('/routes').get_json()[0]['points'] == new_points)
+check('после отказов отрезки целы',
+      client.get('/routes').get_json()[0]['segments'] == SEG1)
+
+r = client.patch('/route/1', json={'points': [[45.5, 38.5], [45.6, 38.6]]})
+check('PATCH points -> цепочка отрезков',
+      r.get_json()['segments'] == [[[45.5, 38.5], [45.6, 38.6]]], r.get_json().get('segments'))
 
 r = client.patch('/route/1', json={'name': 'Переименован'})
-check('переименование не сбрасывает точки',
-      r.get_json()['points'] == new_points, r.get_json().get('points'))
-r = client.patch('/route/999', json={'points': new_points})
+check('переименование не сбрасывает геометрию',
+      r.get_json()['segments'] == [[[45.5, 38.5], [45.6, 38.6]]])
+r = client.patch('/route/999', json={'segments': SEG1})
 check('несуществующий маршрут -> 404', r.status_code == 404, r.status_code)
 
 print('7) CSRF и content-type')
-r = client.post('/routes', data='{"name":"x","points":[[45,38],[45.1,38.1]]}',
-                content_type='text/plain')
+r = client.post('/routes', data='{"name":"x","segments":[]}', content_type='text/plain')
 check('text/plain -> 415', r.status_code == 415, r.status_code)
-r = client.post('/routes', json={'name': 'x', 'points': [[45, 38], [45.1, 38.1]]},
+r = client.post('/routes', json={'name': 'x', 'segments': SEG1},
                 headers={'Sec-Fetch-Site': 'cross-site'})
 check('cross-site -> 403', r.status_code == 403, r.status_code)
-r = client.post('/routes', json={'name': 'x', 'points': [[45, 38], [45.1, 38.1]]},
+r = client.post('/routes', json={'name': 'x', 'segments': SEG1},
                 headers={'Origin': 'http://evil.example'})
 check('чужой Origin -> 403', r.status_code == 403, r.status_code)
-r = client.post('/routes', json={'name': 'ok', 'points': [[45, 38], [45.1, 38.1]]},
+r = client.post('/routes', json={'name': 'ok', 'segments': SEG1},
                 headers={'Origin': 'http://localhost'})
 check('свой Origin -> 201', r.status_code == 201, r.status_code)
 
