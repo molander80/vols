@@ -50,6 +50,7 @@ button,input,select{font:inherit;color:inherit}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 .btn.icon{padding:6px 9px}
 .btn:disabled{opacity:.6;cursor:default}
+.btn.active{border-color:var(--accent);color:var(--accent);background:rgba(56,189,248,.14)}
 .input{background:var(--panel-2);border:1px solid var(--line);padding:6px 10px;
   border-radius:8px;outline:none;min-width:200px;}
 .input:focus{border-color:var(--accent)}
@@ -316,6 +317,7 @@ button,input,select{font:inherit;color:inherit}
       <button class="btn" id="btnUploadFiles">📂 KMZ</button>
       <button class="btn" id="btnUploadFolder">📁 Папка</button>
       <button class="btn" id="btnNewFolder">📁+</button>
+      <button class="btn" id="btnDraw" title="Нарисовать маршрут на карте">✏️ Рисовать</button>
       <button class="btn" id="btnExport">💾 KMZ</button>
       <button class="btn" id="btnExportTree" title="Сохранить дерево маршрутов на диск (uploads/tree/)">📥 Выгрузить дерево</button>
       <input type="file" id="fileInput" multiple accept=".kmz,.kml" style="display:none">

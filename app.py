@@ -608,6 +608,59 @@ def routes_list():
     return jsonify(_routes.all())
 
 
+POINT_LIMIT = 100_000
+
+
+def _validate_points(points):
+    """Проверяет геометрию маршрута. Возвращает (clean_points, error)."""
+    if not isinstance(points, list):
+        return None, 'points must be a list'
+    if not 2 <= len(points) <= POINT_LIMIT:
+        return None, f'points must contain 2..{POINT_LIMIT} items'
+
+    clean = []
+    for i, p in enumerate(points):
+        if not isinstance(p, (list, tuple)) or len(p) < 2:
+            return None, f'points[{i}] must be [lat, lon]'
+        try:
+            lat, lng = float(p[0]), float(p[1])
+        except (TypeError, ValueError):
+            return None, f'points[{i}] must contain numbers'
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+            return None, f'points[{i}] out of range'
+        clean.append([lat, lng])
+    return clean, None
+
+
+@app.route('/routes', methods=['POST'])
+def routes_create():
+    """Создаёт маршрут, нарисованный на карте."""
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get('name') or '').strip() or 'Новый маршрут'
+    folder = (data.get('folder') or '').strip().strip('/')
+    branch = data.get('branch')
+
+    if branch is not None and not isinstance(branch, str):
+        return jsonify({'error': 'branch must be a string or null'}), 400
+
+    points, error = _validate_points(data.get('points'))
+    if error:
+        return jsonify({'error': error}), 400
+
+    rid = _routes.new_id()
+    route = {
+        'id': rid,
+        'name': name,
+        'branch': branch,
+        'folder': folder,
+        'visible': True,
+        'points': points,
+    }
+    _routes.put(route)
+    _routes.touch()
+    return jsonify(route), 201
+
+
 @app.route('/route/<int:rid>', methods=['PATCH'])
 def patch_route(rid):
     r = _routes.patch(rid, request.get_json(force=True) or {})

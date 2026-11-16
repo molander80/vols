@@ -44,6 +44,16 @@ const patchRoutesBulk = (ids, patch) => {
   }).catch(err => console.warn('bulk patch failed', err));
 };
 
+const createRoute = (payload) =>
+  fetch('/routes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json()).catch(err => {
+    console.warn('create route failed', err);
+    return null;
+  });
+
 /* ==========================================================================
    STATE
    ========================================================================== */
@@ -56,6 +66,7 @@ const K = {
   dragPayload: null,
   search: '',
   linked: null,
+  draw: null,
 };
 
 const G = {
@@ -96,6 +107,7 @@ let __curPopup = null;
    ========================================================================== */
 function setMode(mode){
   if (mode !== 'kmz' && mode !== 'gpon') return;
+  if (K.draw) kmzDrawStop();
 
   document.querySelectorAll('.mode-switch button').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === mode);
@@ -187,6 +199,7 @@ function kmzBuildLayer(r){
   });
 
   line.on('click', (e) => {
+    if (K.draw) return;   // в режиме рисования клик по линии не изолирует
     L.DomEvent.stopPropagation(e);
     if (K.linked && K.linked.id === r.id) kmzClearLink();
     else kmzLinkRoute(r.id);
@@ -626,7 +639,7 @@ const kmzFolderMove = (oldPath, newPath) =>
   fetch('/folders/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ old: oldPath, new: newPath }) })
     .catch(e => console.warn('folder move failed', e));
 
-async function kmzLoadRoutes(){
+async function kmzLoadRoutes({ fit = true } = {}){
   const res = await fetch('/routes');
   const fresh = await res.json();
 
@@ -650,7 +663,7 @@ async function kmzLoadRoutes(){
   const brandNew = K.routes.filter(r => !oldIds.has(r.id));
   const addedCount = kmzAddLayersFor(brandNew);
 
-  if (wasEmpty || addedCount > 0) kmzFitAll();
+  if (fit && (wasEmpty || addedCount > 0)) kmzFitAll();
   kmzApplyFilters();
   $('s-routes').textContent = K.routes.length;
 }
@@ -671,6 +684,108 @@ async function kmzUpload(files){
   }
   await fetch('/upload', { method: 'POST', body: fd });
   await kmzLoadRoutes();
+}
+
+/* ==========================================================================
+   KMZ — РИСОВАНИЕ МАРШРУТА
+   ========================================================================== */
+const DRAW_LINE_STYLE = { color: '#38bdf8', weight: 3, dashArray: '6 6', opacity: .95 };
+
+function kmzDistanceKm(points){
+  if (!points || points.length < 2) return 0;
+  const R = 6371, toRad = Math.PI / 180;
+  let total = 0;
+  for (let i = 1; i < points.length; i++){
+    const [lat1, lon1] = points[i - 1];
+    const [lat2, lon2] = points[i];
+    const dLat = (lat2 - lat1) * toRad;
+    const dLon = (lon2 - lon1) * toRad;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+    total += 2 * R * Math.asin(Math.sqrt(a));
+  }
+  return total;
+}
+
+function kmzDrawHint(text){
+  const el = $('editHint');
+  if (!el) return;
+  if (!text){
+    const n = K.draw ? K.draw.points.length : 0;
+    const km = K.draw ? kmzDistanceKm(K.draw.points) : 0;
+    text = `✏️ Клик — точка (${n}), правый клик — убрать, Enter — сохранить, Esc — отмена · ${km.toFixed(2)} км`;
+  }
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+function kmzDrawRender(){
+  if (!K.draw) return;
+  const pts = K.draw.points;
+  if (!K.draw.line){
+    K.draw.line = L.polyline(pts, DRAW_LINE_STYLE).addTo(map);
+    K.draw.dots = L.layerGroup().addTo(map);
+  }
+  K.draw.line.setLatLngs(pts);
+  K.draw.dots.clearLayers();
+  for (const p of pts){
+    L.circleMarker(p, {
+      radius: 4, color: '#38bdf8', weight: 2, fillColor: '#fff', fillOpacity: 1,
+    }).addTo(K.draw.dots);
+  }
+  kmzDrawHint();
+}
+
+function kmzDrawStart(){
+  if (K.draw) return;
+  K.draw = { points: [], line: null, dots: null };
+  map.doubleClickZoom.disable();
+  const btn = $('btnDraw');
+  if (btn){ btn.classList.add('active'); btn.textContent = '✏️ Рисую…'; }
+  kmzDrawRender();
+}
+
+function kmzDrawStop(){
+  if (!K.draw) return;
+  for (const layer of [K.draw.line, K.draw.dots]){
+    if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+  }
+  K.draw = null;
+  map.doubleClickZoom.enable();
+  const btn = $('btnDraw');
+  if (btn){ btn.classList.remove('active'); btn.textContent = '✏️ Рисовать'; }
+  const el = $('editHint');
+  if (el) el.classList.add('hidden');
+}
+
+function kmzDrawAddPoint(latlng){
+  if (!K.draw) return;
+  K.draw.points.push([latlng.lat, latlng.lng]);
+  kmzDrawRender();
+}
+
+function kmzDrawUndoPoint(){
+  if (!K.draw || !K.draw.points.length) return;
+  K.draw.points.pop();
+  kmzDrawRender();
+}
+
+async function kmzDrawSave(){
+  if (!K.draw) return;
+  if (K.draw.points.length < 2){
+    kmzDrawHint('Нужно минимум 2 точки');
+    return;
+  }
+  const name = prompt('Название маршрута:', 'Новый маршрут');
+  if (name === null) return;
+  const points = K.draw.points.map(p => [p[0], p[1]]);
+  const route = await createRoute({ name: (name || '').trim() || 'Новый маршрут', points });
+  if (!route || route.error){
+    alert('Не удалось сохранить маршрут: ' + ((route && route.error) || 'ошибка сети'));
+    return;
+  }
+  kmzDrawStop();
+  await kmzLoadRoutes({ fit: false });
 }
 
 /* ==========================================================================
@@ -1818,6 +1933,10 @@ function gponSetMarkersVisible(visible){
    MAP — click handler
    ========================================================================== */
 map.on('click', (e) => {
+  if (K.draw){
+    kmzDrawAddPoint(e.latlng);
+    return;
+  }
   if (G.editMode?.type === 'set'){
     L.DomEvent.stopPropagation(e);
     gponHandleMapClickForSet(e.latlng);
@@ -1832,10 +1951,24 @@ map.on('click', (e) => {
   gponClearBranchHighlight();
 });
 
+map.on('contextmenu', (e) => {
+  if (!K.draw) return;
+  L.DomEvent.preventDefault(e);
+  kmzDrawUndoPoint();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (!K.draw) return;
+  if (e.key === 'Escape'){ e.preventDefault(); kmzDrawStop(); }
+  else if (e.key === 'Enter'){ e.preventDefault(); kmzDrawSave(); }
+  else if (e.key === 'Backspace'){ e.preventDefault(); kmzDrawUndoPoint(); }
+});
+
 /* ==========================================================================
    KMZ EVENTS
    ========================================================================== */
 $('btnUploadFiles').onclick = () => $('fileInput').click();
+$('btnDraw').onclick = () => { if (K.draw) kmzDrawSave(); else kmzDrawStart(); };
 $('btnUploadFolder').onclick = () => $('folderInput').click();
 $('fileInput').onchange = e => kmzUpload([...e.target.files]);
 $('folderInput').onchange = e => kmzUpload([...e.target.files]);
