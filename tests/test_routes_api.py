@@ -83,6 +83,32 @@ r = client.post('/routes', json={'name': 'Int', 'points': [[45, 38], [46, 39]]})
 check('целые стали float', r.get_json()['points'] == [[45.0, 38.0], [46.0, 39.0]],
       r.get_json()['points'])
 
+print('6) правка геометрии через PATCH /route/<id>')
+new_points = [[45.5, 38.5], [45.6, 38.6], [45.7, 38.7]]
+r = client.patch('/route/1', json={'points': new_points})
+body = r.get_json()
+check('200', r.status_code == 200, r.status_code)
+check('точки заменены', body.get('points') == new_points, body.get('points'))
+check('имя не изменилось', body.get('name') == 'Нарисованный', body.get('name'))
+check('GET /routes отражает правку',
+      client.get('/routes').get_json()[0]['points'] == new_points)
+
+for name, payload in [
+    ('одна точка', {'points': [[45.0, 38.0]]}),
+    ('не числа', {'points': [['a', 'b'], ['c', 'd']]}),
+    ('вне диапазона', {'points': [[45.0, 200.0], [45.1, 38.1]]}),
+]:
+    r = client.patch('/route/1', json=payload)
+    check(f'{name} -> 400', r.status_code == 400, r.get_json())
+check('после отказов точки целы',
+      client.get('/routes').get_json()[0]['points'] == new_points)
+
+r = client.patch('/route/1', json={'name': 'Переименован'})
+check('переименование не сбрасывает точки',
+      r.get_json()['points'] == new_points, r.get_json().get('points'))
+r = client.patch('/route/999', json={'points': new_points})
+check('несуществующий маршрут -> 404', r.status_code == 404, r.status_code)
+
 server._routes.saver.cancel()
 print()
 if failures:

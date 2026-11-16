@@ -227,6 +227,12 @@ button,input,select{font:inherit;color:inherit}
   color: var(--muted);
 }
 
+/* Маркеры правки геометрии маршрута */
+.geom-marker{background:none;border:none;cursor:grab}
+.geom-marker:active{cursor:grabbing}
+.geom-dot{width:12px;height:12px;border-radius:50%;background:var(--switch);
+  border:2px solid var(--bg);box-shadow:0 1px 3px rgba(0,0,0,.6)}
+
 /* Пульсация редактируемой метки */
 .onu-marker.editable{
   cursor: grab !important;

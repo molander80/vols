@@ -253,7 +253,7 @@ class RoutesStore:
         with self._lock:
             self.routes[route['id']] = route
 
-    def patch(self, rid, data: dict, allowed=('name', 'branch', 'folder', 'visible')):
+    def patch(self, rid, data: dict, allowed=('name', 'branch', 'folder', 'visible', 'points')):
         with self._lock:
             r = self.routes.get(rid)
             if not r:
@@ -663,7 +663,14 @@ def routes_create():
 
 @app.route('/route/<int:rid>', methods=['PATCH'])
 def patch_route(rid):
-    r = _routes.patch(rid, request.get_json(force=True) or {})
+    data = request.get_json(force=True) or {}
+    if 'points' in data:
+        # правка геометрии с карты: координаты проверяются так же, как при создании
+        points, error = _validate_points(data['points'])
+        if error:
+            return jsonify({'error': error}), 400
+        data = dict(data, points=points)
+    r = _routes.patch(rid, data)
     if r is None:
         return jsonify({'error': 'not found'}), 404
     _routes.touch()

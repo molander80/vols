@@ -67,6 +67,8 @@ const K = {
   search: '',
   linked: null,
   draw: null,
+  editGeom: null,
+  expandedFolders: new Set(),
 };
 
 const G = {
@@ -108,6 +110,7 @@ let __curPopup = null;
 function setMode(mode){
   if (mode !== 'kmz' && mode !== 'gpon') return;
   if (K.draw) kmzDrawStop();
+  if (K.editGeom) kmzGeomCancel();
 
   document.querySelectorAll('.mode-switch button').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === mode);
@@ -199,7 +202,7 @@ function kmzBuildLayer(r){
   });
 
   line.on('click', (e) => {
-    if (K.draw) return;   // в режиме рисования клик по линии не изолирует
+    if (K.draw || K.editGeom) return;   // в режимах рисования/правки клик не изолирует
     L.DomEvent.stopPropagation(e);
     if (K.linked && K.linked.id === r.id) kmzClearLink();
     else kmzLinkRoute(r.id);
@@ -283,6 +286,7 @@ function kmzApplyFilters(){
 function kmzCollapseAllFolders(){
   const tree = $('folderTree');
   if (!tree) return;
+  K.expandedFolders.clear();
   tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.add('collapsed'));
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
 }
@@ -291,6 +295,7 @@ function kmzCollapseExceptRoute(routeId){
   const tree = $('folderTree');
   if (!tree) return;
 
+  K.expandedFolders.clear();
   tree.querySelectorAll('.folder-children').forEach(ch => ch.classList.add('collapsed'));
   tree.querySelectorAll('.folder-toggle').forEach(t => t.textContent = '▸');
   tree.querySelectorAll('.route-row.linked').forEach(r => r.classList.remove(CLS.LINKED));
@@ -306,6 +311,7 @@ function kmzCollapseExceptRoute(routeId){
       if (prev?.classList.contains('folder-row')){
         const toggle = prev.querySelector('.folder-toggle');
         if (toggle) toggle.textContent = '▾';
+        if (prev.dataset.folderPath) K.expandedFolders.add(prev.dataset.folderPath);
       }
     }
     p = p.parentElement;
@@ -388,16 +394,18 @@ function makeFolderRow(node, pathStr){
   });
   row.addEventListener('dragend', () => { K.dragPayload = null; });
 
+  const opened = K.expandedFolders.has(pathStr);
   const toggle = document.createElement('span');
   toggle.className = 'folder-toggle';
-  toggle.textContent = '▾';
+  toggle.textContent = opened ? '▾' : '▸';
   toggle.onclick = e => {
     e.stopPropagation();
     const ch = row.nextElementSibling;
-    if (ch?.classList.contains('folder-children')){
-      ch.classList.toggle('collapsed');
-      toggle.textContent = ch.classList.contains('collapsed') ? '▸' : '▾';
-    }
+    if (!ch?.classList.contains('folder-children')) return;
+    const collapsed = ch.classList.toggle('collapsed');
+    toggle.textContent = collapsed ? '▸' : '▾';
+    if (collapsed) K.expandedFolders.delete(pathStr);
+    else K.expandedFolders.add(pathStr);
   };
 
   const cb = document.createElement('input');
@@ -448,6 +456,9 @@ function makeFolderRow(node, pathStr){
 
   const wrap = document.createElement('div');
   wrap.className = 'folder-children';
+  // дерево по умолчанию свернуто: раскрыто только то, что пользователь
+  // открыл вручную в этой сессии
+  if (!K.expandedFolders.has(pathStr)) wrap.classList.add('collapsed');
 
   return { row, wrap };
 }
@@ -491,12 +502,17 @@ function kmzBuildRouteRow(r){
   actions.className = 'route-actions';
   actions.innerHTML = `
     <button data-act="${ACT.LINK}" title="Связать с GPON">🔗</button>
+    <button data-act="geom" title="Редактировать точки на карте">📐</button>
     <button data-act="rename" title="Переименовать">✏️</button>
     <button data-act="merge" title="Отметить">${K.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
     <button data-act="delete" title="Удалить">✕</button>`;
   actions.querySelector(`[data-act="${ACT.LINK}"]`).onclick = e => {
     e.stopPropagation();
     kmzLinkRoute(r.id);
+  };
+  actions.querySelector('[data-act="geom"]').onclick = e => {
+    e.stopPropagation();
+    kmzGeomBegin(r.id);
   };
   actions.querySelector('[data-act="rename"]').onclick = async () => {
     const nn = prompt('Новое имя:', r.name);
@@ -511,6 +527,7 @@ function kmzBuildRouteRow(r){
   };
   actions.querySelector('[data-act="delete"]').onclick = async () => {
     if (!confirm(`Удалить "${r.name}"?`)) return;
+    if (K.editGeom?.id === r.id) kmzGeomCancel();
     if (K.linked?.id === r.id) kmzClearLink();
     await fetch(`/route/${r.id}`, { method: 'DELETE' });
     K.routes = K.routes.filter(x => x.id !== r.id);
@@ -738,6 +755,7 @@ function kmzDrawRender(){
 
 function kmzDrawStart(){
   if (K.draw) return;
+  if (K.editGeom) kmzGeomCancel();
   K.draw = { points: [], line: null, dots: null };
   map.doubleClickZoom.disable();
   const btn = $('btnDraw');
@@ -786,6 +804,159 @@ async function kmzDrawSave(){
   }
   kmzDrawStop();
   await kmzLoadRoutes({ fit: false });
+}
+
+/* ==========================================================================
+   KMZ — РЕДАКТИРОВАНИЕ ГЕОМЕТРИИ
+   ========================================================================== */
+const GEOM_LINE_STYLE = { color: '#fbbf24', weight: 4, opacity: .95 };
+
+function kmzPointSegmentDistance(lat, lng, a, b){
+  // приближение в плоских координатах: достаточно для выбора ближайшего сегмента
+  const toRad = Math.PI / 180;
+  const kx = Math.cos(lat * toRad);
+  const px = lng * kx, py = lat;
+  const ax = a[1] * kx, ay = a[0];
+  const bx = b[1] * kx, by = b[0];
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function kmzGeomHint(text){
+  const el = $('editHint');
+  if (!el) return;
+  if (!text){
+    const ed = K.editGeom;
+    if (!ed) return;
+    text = `📐 Точек: ${ed.points.length} · ${kmzDistanceKm(ed.points).toFixed(2)} км — ` +
+      'тяните вершину, клик по линии — вставить, правый клик — удалить, Enter — сохранить, Esc — отмена';
+  }
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+function kmzGeomIcon(){
+  return L.divIcon({
+    className: 'geom-marker',
+    html: '<div class="geom-dot"></div>',
+    iconSize: [12, 12], iconAnchor: [6, 6],
+  });
+}
+
+function kmzGeomRenderMarkers(){
+  const ed = K.editGeom;
+  if (!ed) return;
+  ed.markers.clearLayers();
+  for (let i = 0; i < ed.points.length; i++){
+    const marker = L.marker(ed.points[i], {
+      draggable: true, icon: kmzGeomIcon(), zIndexOffset: 1000, keyboard: false,
+    }).addTo(ed.markers);
+
+    marker.on('drag', () => {
+      const ll = marker.getLatLng();
+      ed.points[i] = [ll.lat, ll.lng];
+      ed.line.setLatLngs(ed.points);
+      kmzGeomHint();
+    });
+    marker.on('contextmenu', (e) => {
+      L.DomEvent.stopPropagation(e);
+      L.DomEvent.preventDefault(e);
+      kmzGeomRemove(i);
+    });
+  }
+}
+
+function kmzGeomBegin(routeId){
+  const r = K.routes.find(x => x.id === routeId);
+  if (!r) return;
+  if (K.draw) kmzDrawStop();
+  if (K.editGeom) kmzGeomCancel();
+
+  K.editGeom = {
+    id: r.id,
+    points: r.points.map(p => [p[0], p[1]]),
+    line: null,
+    markers: L.layerGroup().addTo(map),
+  };
+  K.editGeom.line = L.polyline(K.editGeom.points, GEOM_LINE_STYLE).addTo(map);
+  K.editGeom.line.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    kmzGeomInsert(e.latlng);
+  });
+  kmzGeomRenderMarkers();
+  kmzGeomHint();
+}
+
+function kmzGeomInsert(latlng){
+  const ed = K.editGeom;
+  if (!ed || ed.points.length < 2) return;
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < ed.points.length - 1; i++){
+    const d = kmzPointSegmentDistance(latlng.lat, latlng.lng, ed.points[i], ed.points[i + 1]);
+    if (d < bestD){ bestD = d; best = i; }
+  }
+  ed.points.splice(best + 1, 0, [latlng.lat, latlng.lng]);
+  ed.line.setLatLngs(ed.points);
+  kmzGeomRenderMarkers();
+  kmzGeomHint();
+}
+
+function kmzGeomRemove(index){
+  const ed = K.editGeom;
+  if (!ed) return;
+  if (ed.points.length <= 2){
+    kmzGeomHint('Нужно минимум 2 точки');
+    return;
+  }
+  ed.points.splice(index, 1);
+  ed.line.setLatLngs(ed.points);
+  kmzGeomRenderMarkers();
+  kmzGeomHint();
+}
+
+function kmzGeomCancel(){
+  const ed = K.editGeom;
+  if (!ed) return;
+  for (const layer of [ed.line, ed.markers]){
+    if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+  }
+  K.editGeom = null;
+  const el = $('editHint');
+  if (el) el.classList.add('hidden');
+}
+
+async function kmzGeomSave(){
+  const ed = K.editGeom;
+  if (!ed) return;
+  const r = K.routes.find(x => x.id === ed.id);
+  if (!r){ kmzGeomCancel(); return; }
+  const points = ed.points.map(p => [p[0], p[1]]);
+
+  try {
+    const res = await fetch(`/route/${ed.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points }),
+    });
+    if (!res.ok){
+      const err = await res.json().catch(() => ({}));
+      alert('Не удалось сохранить маршрут: ' + (err.error || res.status));
+      return;
+    }
+  } catch (e){
+    alert('Не удалось сохранить маршрут: ' + e.message);
+    return;
+  }
+
+  r.points = points;
+  _simplifiedCache.delete(r);
+  kmzGeomCancel();
+  kmzRemoveLayer(r.id);
+  kmzAddLayersFor([r]);
+  kmzApplyFilters();
 }
 
 /* ==========================================================================
@@ -1962,6 +2133,12 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape'){ e.preventDefault(); kmzDrawStop(); }
   else if (e.key === 'Enter'){ e.preventDefault(); kmzDrawSave(); }
   else if (e.key === 'Backspace'){ e.preventDefault(); kmzDrawUndoPoint(); }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (!K.editGeom) return;
+  if (e.key === 'Escape'){ e.preventDefault(); kmzGeomCancel(); }
+  else if (e.key === 'Enter'){ e.preventDefault(); kmzGeomSave(); }
 });
 
 /* ==========================================================================
