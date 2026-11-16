@@ -70,7 +70,8 @@ const K = {
   editGeom: null,
   expandedFolders: new Set(),
   snapHint: null,
-  geomUndo: null,
+  geomUndoStack: [],
+  snap: true,
 };
 
 const G = {
@@ -975,7 +976,8 @@ async function kmzGeomSave(){
     return;
   }
 
-  K.geomUndo = { id: ed.id, points: ed.original.map(p => [p[0], p[1]]) };
+  K.geomUndoStack.push({ id: ed.id, points: ed.original.map(p => [p[0], p[1]]) });
+  if (K.geomUndoStack.length > 20) K.geomUndoStack.shift();
   r.points = points;
   _simplifiedCache.delete(r);
   kmzGeomCancel();
@@ -1011,6 +1013,7 @@ function kmzSnapTargets(excludeRouteId){
 }
 
 function kmzSnapFind(latlng, excludeRouteId){
+  if (!K.snap) return null;
   const p = map.latLngToContainerPoint(latlng);
   const { verts, segs } = kmzSnapTargets(excludeRouteId);
   let best = null, bestD = SNAP_PIXELS;
@@ -1079,11 +1082,15 @@ function kmzGeomUndo(){
 }
 
 async function kmzGeomUndoLastSave(){
-  const u = K.geomUndo;
-  if (!u) return;
-  K.geomUndo = null;
-  const r = K.routes.find(x => x.id === u.id);
-  if (!r) return;
+  // идём по стеку отмен, пропуская удалённые маршруты
+  let u = null, r = null;
+  while (K.geomUndoStack.length){
+    u = K.geomUndoStack.pop();
+    r = K.routes.find(x => x.id === u.id);
+    if (r) break;
+    u = null;
+  }
+  if (!u || !r) return;
   try {
     const res = await fetch(`/route/${u.id}`, {
       method: 'PATCH',
@@ -1109,6 +1116,24 @@ async function kmzGeomUndoLastSave(){
     if (el && !K.editGeom && !K.draw) el.classList.add('hidden');
   }, 2000);
 }
+
+function kmzSnapPaint(){
+  const btn = $('btnSnap');
+  if (!btn) return;
+  btn.classList.toggle('active', !!K.snap);
+  btn.title = K.snap
+    ? 'Привязка включена: точки липнут к вершинам и линиям (нажмите, чтобы выключить)'
+    : 'Привязка выключена (нажмите, чтобы включить)';
+}
+
+function kmzSnapToggle(value){
+  K.snap = typeof value === 'boolean' ? value : !K.snap;
+  if (!K.snap && K.snapHint && map.hasLayer(K.snapHint)) map.removeLayer(K.snapHint);
+  try { localStorage.setItem('kmz-snap', K.snap ? '1' : '0'); } catch(_) {}
+  kmzSnapPaint();
+}
+
+try { K.snap = localStorage.getItem('kmz-snap') !== '0'; } catch(_) {}
 
 /* ==========================================================================
    KMZ ↔ GPON LINK
@@ -2224,8 +2249,11 @@ function gponSetMarkersVisible(visible){
   G.markersVisible = !!visible;
 
   if (G.markersVisible){
-    if (G.searchMode){
-      // при активном поиске слои возвращать не нужно
+    const q = ($('search') && $('search').value ? $('search').value : '').trim().toLowerCase();
+    const active = document.querySelector('.mode-switch button.active');
+    const inGpon = active && active.dataset.mode === 'gpon';
+    if (inGpon && q){
+      gponSearch(q);            // восстановить подсветку поиска
     } else if (K.linked){
       gponApplyKmzLinkFilter();
     } else {
@@ -2240,6 +2268,7 @@ function gponSetMarkersVisible(visible){
       map.removeLayer(G.searchHighlightLayer);
       G.searchHighlightLayer = null;
     }
+    G.searchMode = false;       // иначе после включения слои не вернутся
   }
 
   const btn = $('btnMarkersVis');
@@ -2301,7 +2330,7 @@ document.addEventListener('keydown', (e) => {
 // вне режимов Ctrl+Z откатывает последнее сохранение геометрии
 document.addEventListener('keydown', (e) => {
   if (K.draw || K.editGeom) return;
-  if (!K.geomUndo) return;
+  if (!K.geomUndoStack.length) return;
   const tag = (e.target?.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea') return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
@@ -2315,6 +2344,8 @@ document.addEventListener('keydown', (e) => {
    ========================================================================== */
 $('btnUploadFiles').onclick = () => $('fileInput').click();
 $('btnDraw').onclick = () => { if (K.draw) kmzDrawSave(); else kmzDrawStart(); };
+$('btnSnap').onclick = () => kmzSnapToggle();
+kmzSnapPaint();
 $('btnUploadFolder').onclick = () => $('folderInput').click();
 $('fileInput').onchange = e => kmzUpload([...e.target.files]);
 $('folderInput').onchange = e => kmzUpload([...e.target.files]);

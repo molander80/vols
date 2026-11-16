@@ -109,6 +109,20 @@ check('переименование не сбрасывает точки',
 r = client.patch('/route/999', json={'points': new_points})
 check('несуществующий маршрут -> 404', r.status_code == 404, r.status_code)
 
+print('7) CSRF и content-type')
+r = client.post('/routes', data='{"name":"x","points":[[45,38],[45.1,38.1]]}',
+                content_type='text/plain')
+check('text/plain -> 415', r.status_code == 415, r.status_code)
+r = client.post('/routes', json={'name': 'x', 'points': [[45, 38], [45.1, 38.1]]},
+                headers={'Sec-Fetch-Site': 'cross-site'})
+check('cross-site -> 403', r.status_code == 403, r.status_code)
+r = client.post('/routes', json={'name': 'x', 'points': [[45, 38], [45.1, 38.1]]},
+                headers={'Origin': 'http://evil.example'})
+check('чужой Origin -> 403', r.status_code == 403, r.status_code)
+r = client.post('/routes', json={'name': 'ok', 'points': [[45, 38], [45.1, 38.1]]},
+                headers={'Origin': 'http://localhost'})
+check('свой Origin -> 201', r.status_code == 201, r.status_code)
+
 server._routes.saver.cancel()
 print()
 if failures:

@@ -65,6 +65,28 @@ app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256 МБ
 app.json.ensure_ascii = False
 
 
+@app.before_request
+def _reject_cross_site():
+    """Отбивает межсайтовые POST/PATCH/DELETE на localhost (CSRF).
+
+    Без этой проверки любая открытая вкладка могла отправить простой запрос
+    (text/plain не требует preflight) и, например, удалить GPON-состояние.
+    """
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return None
+
+    site = request.headers.get('Sec-Fetch-Site')
+    if site and site not in ('same-origin', 'none'):
+        return jsonify({'error': 'cross-site request blocked'}), 403
+
+    origin = request.headers.get('Origin')
+    if origin:
+        host = request.host_url.rstrip('/')
+        if origin.rstrip('/') != host:
+            return jsonify({'error': 'cross-site request blocked'}), 403
+    return None
+
+
 @app.after_request
 def _gzip_response(resp):
     """Сжимает JSON/HTML-ответы gzip, если клиент это поддерживает.
@@ -635,7 +657,7 @@ def _validate_points(points):
 @app.route('/routes', methods=['POST'])
 def routes_create():
     """Создаёт маршрут, нарисованный на карте."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     name = (data.get('name') or '').strip() or 'Новый маршрут'
     folder = (data.get('folder') or '').strip().strip('/')
     branch = data.get('branch')
@@ -663,7 +685,7 @@ def routes_create():
 
 @app.route('/route/<int:rid>', methods=['PATCH'])
 def patch_route(rid):
-    data = request.get_json(force=True) or {}
+    data = request.get_json() or {}
     if 'points' in data:
         # правка геометрии с карты: координаты проверяются так же, как при создании
         points, error = _validate_points(data['points'])
@@ -679,7 +701,7 @@ def patch_route(rid):
 
 @app.route('/routes/bulk', methods=['PATCH'])
 def patch_routes_bulk():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     ids = data.get('ids', [])
     patch = data.get('patch', {})
 
@@ -709,7 +731,7 @@ def patch_routes_bulk():
 
 @app.route('/routes/bulk', methods=['DELETE'])
 def delete_routes_bulk():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     ids = data.get('ids', [])
     if not isinstance(ids, list):
         return jsonify({'error': 'bad payload'}), 400
@@ -737,7 +759,7 @@ def delete_route(rid):
 
 @app.route('/merge', methods=['POST'])
 def merge():
-    data = request.get_json(force=True) or {}
+    data = request.get_json() or {}
     ids = data.get('ids', [])
     name = data.get('name', 'Объединённый маршрут')
 
@@ -764,7 +786,7 @@ def merge():
 
 @app.route('/export', methods=['POST'])
 def export():
-    data = request.get_json(force=True) or {}
+    data = request.get_json() or {}
     ids = data.get('ids', [])
     group_by_branch = bool(data.get('group_by_branch'))
 
@@ -796,7 +818,7 @@ def export():
 
 @app.route('/export_tree', methods=['POST'])
 def export_tree():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     only_visible = bool(data.get('only_visible'))
 
     tree_root = os.path.join(UPLOAD_DIR, 'tree')
@@ -853,7 +875,7 @@ def folders_get():
 
 @app.route('/folders', methods=['POST'])
 def folders_add():
-    data = request.get_json(force=True) or {}
+    data = request.get_json() or {}
     path = (data.get('path') or '').strip().strip('/')
     if not path:
         return jsonify({'error': 'empty'}), 400
@@ -864,7 +886,7 @@ def folders_add():
 
 @app.route('/folders', methods=['DELETE'])
 def folders_delete():
-    data = request.get_json(force=True) or {}
+    data = request.get_json() or {}
     path = (data.get('path') or '').strip().strip('/')
     if not path:
         return jsonify({'error': 'empty'}), 400
@@ -875,7 +897,7 @@ def folders_delete():
 
 @app.route('/folders/rename', methods=['POST'])
 def folders_rename():
-    data = request.get_json(force=True) or {}
+    data = request.get_json() or {}
     old = (data.get('old') or '').strip().strip('/')
     new = (data.get('new') or '').strip().strip('/')
     if not old or not new:
@@ -888,7 +910,7 @@ def folders_rename():
 @app.route('/folders/move', methods=['POST'])
 def folders_move():
     """Переносит папку со всем содержимым одним запросом вместо N+1 PATCH."""
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     old = (data.get('old') or '').strip().strip('/')
     new = (data.get('new') or '').strip().strip('/')
 
@@ -1057,7 +1079,7 @@ def state_import():
 
 @app.route('/gpon/geo', methods=['POST'])
 def gpon_geo_save():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     if not isinstance(data.get('geo'), dict):
         return jsonify({'error': 'geo must be dict'}), 400
 
@@ -1068,7 +1090,7 @@ def gpon_geo_save():
 
 @app.route('/gpon/onus', methods=['POST'])
 def gpon_onus_save():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     if not isinstance(data.get('onus'), list):
         return jsonify({'error': 'onus must be list'}), 400
 
@@ -1079,7 +1101,7 @@ def gpon_onus_save():
 
 @app.route('/gpon/geo/point', methods=['POST'])
 def gpon_geo_point_edit():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     addr = (data.get('addr') or '').strip()
     if not addr:
         return jsonify({'error': 'empty addr'}), 400
@@ -1102,7 +1124,7 @@ def gpon_state_get():
 
 @app.route('/gpon/state', methods=['POST'])
 def gpon_state_post():
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(silent=True) or {}
     if isinstance(data.get('geo'), dict):
         _gpon.set_geo(data['geo'], files=data.get('geoFiles'))
     if isinstance(data.get('onus'), list):
