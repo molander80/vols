@@ -506,7 +506,7 @@ function kmzBuildRouteRow(r){
   actions.innerHTML = `
     <button data-act="${ACT.LINK}" title="Связать с GPON">🔗</button>
     <button data-act="geom" title="Редактировать точки на карте">📐</button>
-    <button data-act="append" title="Дорисовать точки в конец маршрута">➕</button>
+    <button data-act="append" title="Продолжить с конца — или выберите любую вершину">➕</button>
     <button data-act="rename" title="Переименовать">✏️</button>
     <button data-act="merge" title="Отметить">${K.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
     <button data-act="delete" title="Удалить">✕</button>`;
@@ -845,23 +845,19 @@ function kmzGeomHint(text){
     const ed = K.editGeom;
     if (!ed) return;
     const km = kmzDistanceKm(ed.points).toFixed(2);
-    if (ed.append){
-      const route = K.routes.find(x => x.id === ed.id);
-      text = `➕ Дорисовка «${route ? route.name : 'маршрут'}»: точек ${ed.points.length} · ${km} км — ` +
-        'клик добавляет точку в конец, Ctrl+Z — убрать, Enter — сохранить, Esc — отмена';
-    } else {
-      text = `📐 Точек: ${ed.points.length} · ${km} км — ` +
-        'тяните вершину, клик по линии — вставить, правый клик — удалить, Ctrl+Z — отменить шаг, Enter — сохранить, Esc — отмена';
-    }
+    const route = K.routes.find(x => x.id === ed.id);
+    const sel = ed.selected != null ? ` · выбрана вершина ${ed.selected + 1}` : '';
+    text = `${ed.append ? '➕' : '📐'} ${route ? route.name : 'маршрут'}: точек ${ed.points.length} · ${km} км${sel} — ` +
+      'клик по вершине — выбрать, по линии — вставить, по пустому месту — добавить после выбранной, Ctrl+Z — шаг назад, Enter — сохранить, Esc — отмена';
   }
   el.textContent = text;
   el.classList.remove('hidden');
 }
 
-function kmzGeomIcon(){
+function kmzGeomIcon(selected){
   return L.divIcon({
     className: 'geom-marker',
-    html: '<div class="geom-dot"></div>',
+    html: `<div class="geom-dot${selected ? ' sel' : ''}"></div>`,
     iconSize: [12, 12], iconAnchor: [6, 6],
   });
 }
@@ -872,10 +868,16 @@ function kmzGeomRenderMarkers(){
   ed.markers.clearLayers();
   for (let i = 0; i < ed.points.length; i++){
     const marker = L.marker(ed.points[i], {
-      draggable: true, icon: kmzGeomIcon(), zIndexOffset: 1000, keyboard: false,
+      draggable: true, icon: kmzGeomIcon(ed.selected === i), zIndexOffset: 1000, keyboard: false,
     }).addTo(ed.markers);
 
-    marker.on('dragstart', () => kmzGeomPushHistory());
+    marker.on('click', (e) => {
+      L.DomEvent.stopPropagation(e);
+      ed.selected = i;
+      kmzGeomRenderMarkers();
+      kmzGeomHint();
+    });
+    marker.on('dragstart', () => { ed.selected = i; kmzGeomPushHistory(); });
     marker.on('drag', () => {
       const ll = marker.getLatLng();
       ed.points[i] = [ll.lat, ll.lng];
@@ -889,6 +891,8 @@ function kmzGeomRenderMarkers(){
         ed.points[i] = [snap.latlng.lat, snap.latlng.lng];
         ed.line.setLatLngs(ed.points);
       }
+      ed.selected = i;
+      kmzGeomRenderMarkers();
       kmzGeomHint();
     });
     marker.on('contextmenu', (e) => {
@@ -911,13 +915,12 @@ function kmzGeomBegin(routeId, { append = false } = {}){
     original: r.points.map(p => [p[0], p[1]]),
     history: [],
     append: !!append,
+    selected: append ? r.points.length - 1 : null,
     line: null,
     markers: L.layerGroup().addTo(map),
   };
   K.editGeom.line = L.polyline(K.editGeom.points, GEOM_LINE_STYLE).addTo(map);
   K.editGeom.line.on('click', (e) => {
-    // в режиме дорисовки клик по своей линии уходит в карту и добавляет точку
-    if (K.editGeom && K.editGeom.append) return;
     L.DomEvent.stopPropagation(e);
     kmzGeomInsert(e.latlng);
   });
@@ -934,13 +937,27 @@ function kmzGeomAppendBegin(routeId){
   kmzGeomBegin(routeId, { append: true });
 }
 
-function kmzGeomAppendPoint(latlng){
+function kmzGeomAddPoint(latlng){
   const ed = K.editGeom;
-  if (!ed || !ed.append) return;
+  if (!ed) return;
   const snap = kmzSnapFind(latlng, ed.id);
   const ll = snap ? snap.latlng : latlng;
+
+  let index;
+  if (ed.selected != null && ed.selected >= 0 && ed.selected < ed.points.length){
+    index = ed.selected + 1;                 // после выбранной вершины
+  } else {
+    // без выбора — к ближайшему концу линии
+    const first = ed.points[0];
+    const last = ed.points[ed.points.length - 1];
+    const dFirst = kmzPointSegmentDistance(ll.lat, ll.lng, first, first);
+    const dLast = kmzPointSegmentDistance(ll.lat, ll.lng, last, last);
+    index = dFirst < dLast ? 0 : ed.points.length;
+  }
+
   kmzGeomPushHistory();
-  ed.points.push([ll.lat, ll.lng]);
+  ed.points.splice(index, 0, [ll.lat, ll.lng]);
+  ed.selected = index;
   ed.line.setLatLngs(ed.points);
   kmzGeomRenderMarkers();
   kmzGeomHint();
@@ -958,6 +975,7 @@ function kmzGeomInsert(latlng){
   }
   kmzGeomPushHistory();
   ed.points.splice(best + 1, 0, [target.lat, target.lng]);
+  ed.selected = best + 1;
   ed.line.setLatLngs(ed.points);
   kmzGeomRenderMarkers();
   kmzGeomHint();
@@ -972,6 +990,7 @@ function kmzGeomRemove(index){
   }
   kmzGeomPushHistory();
   ed.points.splice(index, 1);
+  ed.selected = null;
   ed.line.setLatLngs(ed.points);
   kmzGeomRenderMarkers();
   kmzGeomHint();
@@ -1112,6 +1131,7 @@ function kmzGeomUndo(){
     return;
   }
   ed.points = ed.history.pop().map(p => [p[0], p[1]]);
+  ed.selected = null;
   ed.line.setLatLngs(ed.points);
   kmzGeomRenderMarkers();
   kmzGeomHint();
@@ -2324,8 +2344,8 @@ map.on('click', (e) => {
     kmzDrawAddPoint(e.latlng);
     return;
   }
-  if (K.editGeom && K.editGeom.append){
-    kmzGeomAppendPoint(e.latlng);
+  if (K.editGeom){
+    kmzGeomAddPoint(e.latlng);
     return;
   }
   if (G.editMode?.type === 'set'){
