@@ -82,6 +82,22 @@ for (const [name, lat, lng, a, b, expected, tolerance] of segCases) {
     `ожидалось ${expected} ± ${tolerance}`);
 }
 
+console.log('3) привязка: ближайшая точка на сегменте');
+const closest = extractFunction('kmzClosestOnSegment',
+  ['px', 'py', 'ax', 'ay', 'bx', 'by']);
+const nearCases = [
+  // [название, результат, ожидаемый x, y, расстояние]
+  ['середина отрезка', closest(5, 5, 0, 0, 10, 0), 5, 0, 5],
+  ['за концом отрезка', closest(20, 0, 0, 0, 10, 0), 10, 0, 10],
+  ['вырожденный сегмент', closest(3, 4, 0, 0, 0, 0), 0, 0, 5],
+];
+for (const [name, res, x, y, dist] of nearCases) {
+  const ok = Math.abs(res.x - x) < 1e-6 && Math.abs(res.y - y) < 1e-6 &&
+             Math.abs(res.dist - dist) < 1e-6;
+  check(`${name} => (${res.x.toFixed(2)}, ${res.y.toFixed(2)}), d=${res.dist.toFixed(2)}`,
+    ok, `ожидалось (${x}, ${y}), d=${dist}`);
+}
+
 console.log();
 if (failed) {
   console.error(`${failed} из ${checks} проверок не прошли`);

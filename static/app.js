@@ -69,6 +69,8 @@ const K = {
   draw: null,
   editGeom: null,
   expandedFolders: new Set(),
+  snapHint: null,
+  geomUndo: null,
 };
 
 const G = {
@@ -732,7 +734,7 @@ function kmzDrawHint(text){
   if (!text){
     const n = K.draw ? K.draw.points.length : 0;
     const km = K.draw ? kmzDistanceKm(K.draw.points) : 0;
-    text = `✏️ Клик — точка (${n}), правый клик — убрать, Enter — сохранить, Esc — отмена · ${km.toFixed(2)} км`;
+    text = `✏️ Клик — точка (${n}) · ${km.toFixed(2)} км — правый клик/Ctrl+Z убирают точку, Enter — сохранить, Esc — отмена`;
   }
   el.textContent = text;
   el.classList.remove('hidden');
@@ -774,13 +776,16 @@ function kmzDrawStop(){
   map.doubleClickZoom.enable();
   const btn = $('btnDraw');
   if (btn){ btn.classList.remove('active'); btn.textContent = '✏️ Рисовать'; }
+  kmzSnapHintShow(null);
   const el = $('editHint');
   if (el) el.classList.add('hidden');
 }
 
 function kmzDrawAddPoint(latlng){
   if (!K.draw) return;
-  K.draw.points.push([latlng.lat, latlng.lng]);
+  const snap = kmzSnapFind(latlng, null);
+  const ll = snap ? snap.latlng : latlng;
+  K.draw.points.push([ll.lat, ll.lng]);
   kmzDrawRender();
 }
 
@@ -834,7 +839,7 @@ function kmzGeomHint(text){
     const ed = K.editGeom;
     if (!ed) return;
     text = `📐 Точек: ${ed.points.length} · ${kmzDistanceKm(ed.points).toFixed(2)} км — ` +
-      'тяните вершину, клик по линии — вставить, правый клик — удалить, Enter — сохранить, Esc — отмена';
+      'тяните вершину, клик по линии — вставить, правый клик — удалить, Ctrl+Z — отменить шаг, Enter — сохранить, Esc — отмена';
   }
   el.textContent = text;
   el.classList.remove('hidden');
@@ -857,10 +862,20 @@ function kmzGeomRenderMarkers(){
       draggable: true, icon: kmzGeomIcon(), zIndexOffset: 1000, keyboard: false,
     }).addTo(ed.markers);
 
+    marker.on('dragstart', () => kmzGeomPushHistory());
     marker.on('drag', () => {
       const ll = marker.getLatLng();
       ed.points[i] = [ll.lat, ll.lng];
       ed.line.setLatLngs(ed.points);
+      kmzGeomHint();
+    });
+    marker.on('dragend', () => {
+      const snap = kmzSnapFind(marker.getLatLng(), ed.id);
+      if (snap){
+        marker.setLatLng(snap.latlng);
+        ed.points[i] = [snap.latlng.lat, snap.latlng.lng];
+        ed.line.setLatLngs(ed.points);
+      }
       kmzGeomHint();
     });
     marker.on('contextmenu', (e) => {
@@ -880,6 +895,8 @@ function kmzGeomBegin(routeId){
   K.editGeom = {
     id: r.id,
     points: r.points.map(p => [p[0], p[1]]),
+    original: r.points.map(p => [p[0], p[1]]),
+    history: [],
     line: null,
     markers: L.layerGroup().addTo(map),
   };
@@ -895,12 +912,15 @@ function kmzGeomBegin(routeId){
 function kmzGeomInsert(latlng){
   const ed = K.editGeom;
   if (!ed || ed.points.length < 2) return;
+  const snap = kmzSnapFind(latlng, ed.id);
+  const target = snap ? snap.latlng : latlng;
   let best = 0, bestD = Infinity;
   for (let i = 0; i < ed.points.length - 1; i++){
-    const d = kmzPointSegmentDistance(latlng.lat, latlng.lng, ed.points[i], ed.points[i + 1]);
+    const d = kmzPointSegmentDistance(target.lat, target.lng, ed.points[i], ed.points[i + 1]);
     if (d < bestD){ bestD = d; best = i; }
   }
-  ed.points.splice(best + 1, 0, [latlng.lat, latlng.lng]);
+  kmzGeomPushHistory();
+  ed.points.splice(best + 1, 0, [target.lat, target.lng]);
   ed.line.setLatLngs(ed.points);
   kmzGeomRenderMarkers();
   kmzGeomHint();
@@ -913,6 +933,7 @@ function kmzGeomRemove(index){
     kmzGeomHint('Нужно минимум 2 точки');
     return;
   }
+  kmzGeomPushHistory();
   ed.points.splice(index, 1);
   ed.line.setLatLngs(ed.points);
   kmzGeomRenderMarkers();
@@ -926,6 +947,7 @@ function kmzGeomCancel(){
     if (layer && map.hasLayer(layer)) map.removeLayer(layer);
   }
   K.editGeom = null;
+  kmzSnapHintShow(null);
   const el = $('editHint');
   if (el) el.classList.add('hidden');
 }
@@ -953,12 +975,139 @@ async function kmzGeomSave(){
     return;
   }
 
+  K.geomUndo = { id: ed.id, points: ed.original.map(p => [p[0], p[1]]) };
   r.points = points;
   _simplifiedCache.delete(r);
   kmzGeomCancel();
   kmzRemoveLayer(r.id);
   kmzAddLayersFor([r]);
   kmzApplyFilters();
+}
+
+/* ==========================================================================
+   KMZ — ПРИВЯЗКА К ВЕРШИНАМ И СЕГМЕНТАМ
+   ========================================================================== */
+const SNAP_PIXELS = 12;
+let __lastSnapTs = 0;
+
+function kmzClosestOnSegment(px, py, ax, ay, bx, by){
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return { x: cx, y: cy, dist: Math.hypot(px - cx, py - cy) };
+}
+
+function kmzSnapTargets(excludeRouteId){
+  const verts = [], segs = [];
+  for (const r of K.routes){
+    if (excludeRouteId != null && r.id === excludeRouteId) continue;
+    const pts = r.points || [];
+    for (let i = 0; i < pts.length; i++) verts.push(pts[i]);
+    for (let i = 0; i < pts.length - 1; i++) segs.push([pts[i], pts[i + 1]]);
+  }
+  return { verts, segs };
+}
+
+function kmzSnapFind(latlng, excludeRouteId){
+  const p = map.latLngToContainerPoint(latlng);
+  const { verts, segs } = kmzSnapTargets(excludeRouteId);
+  let best = null, bestD = SNAP_PIXELS;
+
+  // сначала вершины: привязка к существующей точке важнее, чем к линии
+  for (const v of verts){
+    const q = map.latLngToContainerPoint(v);
+    const d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d < bestD){ bestD = d; best = { latlng: L.latLng(v[0], v[1]), kind: 'vertex' }; }
+  }
+
+  for (const [a, b] of segs){
+    const qa = map.latLngToContainerPoint(a);
+    const qb = map.latLngToContainerPoint(b);
+    const c = kmzClosestOnSegment(p.x, p.y, qa.x, qa.y, qb.x, qb.y);
+    if (c.dist < bestD){
+      bestD = c.dist;
+      best = { latlng: map.containerPointToLatLng(L.point(c.x, c.y)), kind: 'segment' };
+    }
+  }
+  return best;
+}
+
+function kmzSnapHintShow(snap){
+  if (!K.snapHint){
+    K.snapHint = L.marker([0, 0], {
+      interactive: false, keyboard: false, zIndexOffset: 2000,
+      icon: L.divIcon({ className: 'snap-ring', iconSize: [14, 14], iconAnchor: [7, 7], html: '' }),
+    });
+  }
+  if (!snap){
+    if (map.hasLayer(K.snapHint)) map.removeLayer(K.snapHint);
+    return;
+  }
+  K.snapHint.setLatLng(snap.latlng);
+  if (!map.hasLayer(K.snapHint)) K.snapHint.addTo(map);
+}
+
+map.on('mousemove', (e) => {
+  if (!K.draw && !K.editGeom) return;
+  const now = Date.now();
+  if (now - __lastSnapTs < 50) return;
+  __lastSnapTs = now;
+  kmzSnapHintShow(kmzSnapFind(e.latlng, K.editGeom ? K.editGeom.id : null));
+});
+
+function kmzGeomPushHistory(){
+  const ed = K.editGeom;
+  if (!ed) return;
+  if (!ed.history) ed.history = [];
+  ed.history.push(ed.points.map(p => [p[0], p[1]]));
+  if (ed.history.length > 50) ed.history.shift();
+}
+
+function kmzGeomUndo(){
+  const ed = K.editGeom;
+  if (!ed) return;
+  if (!ed.history || !ed.history.length){
+    kmzGeomHint('Отменять нечего');
+    return;
+  }
+  ed.points = ed.history.pop().map(p => [p[0], p[1]]);
+  ed.line.setLatLngs(ed.points);
+  kmzGeomRenderMarkers();
+  kmzGeomHint();
+}
+
+async function kmzGeomUndoLastSave(){
+  const u = K.geomUndo;
+  if (!u) return;
+  K.geomUndo = null;
+  const r = K.routes.find(x => x.id === u.id);
+  if (!r) return;
+  try {
+    const res = await fetch(`/route/${u.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: u.points }),
+    });
+    if (!res.ok){
+      alert('Не удалось отменить: ' + res.status);
+      return;
+    }
+  } catch (e){
+    alert('Не удалось отменить: ' + e.message);
+    return;
+  }
+  r.points = u.points.map(p => [p[0], p[1]]);
+  _simplifiedCache.delete(r);
+  kmzRemoveLayer(r.id);
+  kmzAddLayersFor([r]);
+  kmzApplyFilters();
+  kmzGeomHint('↩ Геометрия маршрута восстановлена');
+  setTimeout(() => {
+    const el = $('editHint');
+    if (el && !K.editGeom && !K.draw) el.classList.add('hidden');
+  }, 2000);
 }
 
 /* ==========================================================================
@@ -2132,15 +2281,33 @@ map.on('contextmenu', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (!K.draw) return;
-  if (e.key === 'Escape'){ e.preventDefault(); kmzDrawStop(); }
+  const tag = (e.target?.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){ e.preventDefault(); kmzDrawUndoPoint(); }
+  else if (e.key === 'Escape'){ e.preventDefault(); kmzDrawStop(); }
   else if (e.key === 'Enter'){ e.preventDefault(); kmzDrawSave(); }
   else if (e.key === 'Backspace'){ e.preventDefault(); kmzDrawUndoPoint(); }
 });
 
 document.addEventListener('keydown', (e) => {
   if (!K.editGeom) return;
-  if (e.key === 'Escape'){ e.preventDefault(); kmzGeomCancel(); }
+  const tag = (e.target?.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){ e.preventDefault(); kmzGeomUndo(); }
+  else if (e.key === 'Escape'){ e.preventDefault(); kmzGeomCancel(); }
   else if (e.key === 'Enter'){ e.preventDefault(); kmzGeomSave(); }
+});
+
+// вне режимов Ctrl+Z откатывает последнее сохранение геометрии
+document.addEventListener('keydown', (e) => {
+  if (K.draw || K.editGeom) return;
+  if (!K.geomUndo) return;
+  const tag = (e.target?.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
+    e.preventDefault();
+    kmzGeomUndoLastSave();
+  }
 });
 
 /* ==========================================================================
