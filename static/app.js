@@ -516,7 +516,7 @@ function kmzBuildRouteRow(r){
     <button data-act="geom" title="Редактировать точки на карте">📐</button>
     <button data-act="append" title="Продолжить с конца — или выберите любую вершину">➕</button>
     <button data-act="rename" title="Переименовать">✏️</button>
-    <button data-act="merge" title="Отметить">${K.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
+    <button data-act="merge" title="Отметить для объединения">${K.mergeMarked.has(r.id) ? '☑' : '◻'}</button>
     <button data-act="delete" title="Удалить">✕</button>`;
   actions.querySelector(`[data-act="${ACT.LINK}"]`).onclick = e => {
     e.stopPropagation();
@@ -2538,6 +2538,36 @@ $('btnUploadFiles').onclick = () => $('fileInput').click();
 $('btnDraw').onclick = () => { if (K.draw) kmzDrawSave(); else kmzDrawStart(); };
 $('btnSnap').onclick = () => kmzSnapToggle();
 kmzSnapPaint();
+
+$('btnMerge').onclick = async () => {
+  const ids = [...K.mergeMarked];
+  if (ids.length < 2){
+    alert('Отметьте 2 и более маршрута кнопкой ◻ в дереве и нажмите «Объединить».');
+    return;
+  }
+  const first = K.routes.find(r => r.id === ids[0]);
+  const name = prompt('Название объединённого маршрута:', first ? first.name : 'Объединённый маршрут');
+  if (name === null) return;
+
+  let res;
+  try {
+    res = await fetch('/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, name: (name || '').trim() || 'Объединённый маршрут' }),
+    });
+  } catch (e){
+    alert('Не удалось объединить: ' + e.message);
+    return;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok){
+    alert('Не удалось объединить: ' + (data.error || res.status));
+    return;
+  }
+  K.mergeMarked.clear();
+  await kmzLoadRoutes({ fit: false });
+};
 $('btnUploadFolder').onclick = () => $('folderInput').click();
 $('fileInput').onchange = e => kmzUpload([...e.target.files]);
 $('folderInput').onchange = e => kmzUpload([...e.target.files]);

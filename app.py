@@ -239,6 +239,127 @@ def _flatten_points(segments):
             out.append([float(p[0]), float(p[1])])
     return out
 
+
+def _seg_key(p):
+    return (round(float(p[0]), 7), round(float(p[1]), 7))
+
+
+def _deg_distance(a, b):
+    """Приблизительное расстояние в градусах — для сшивки концов."""
+    dlat = float(a[0]) - float(b[0])
+    dlng = (float(a[1]) - float(b[1])) * 0.7
+    return (dlat * dlat + dlng * dlng) ** 0.5
+
+
+def _walk_chain(segments):
+    """Один связный путь из набора отрезков + оставшиеся отрезки."""
+    adj = {}
+    for i, seg in enumerate(segments):
+        a, b = seg
+        ka, kb = _seg_key(a), _seg_key(b)
+        adj.setdefault(ka, []).append((i, kb, a, b))
+        adj.setdefault(kb, []).append((i, ka, b, a))
+
+    if not adj:
+        return [], list(segments)
+
+    start = None
+    for k, lst in adj.items():
+        if len(lst) == 1:
+            start = k
+            break
+    if start is None:
+        start = next(iter(adj))
+
+    edge = adj[start][0]
+    points = [[float(edge[2][0]), float(edge[2][1])]]
+    used = set()
+    cur = start
+    while True:
+        step = None
+        for (i, other, from_pt, to_pt) in adj.get(cur, []):
+            if i in used:
+                continue
+            step = (i, other, to_pt)
+            break
+        if step is None:
+            break
+        i, other, to_pt = step
+        used.add(i)
+        points.append([float(to_pt[0]), float(to_pt[1])])
+        cur = other
+
+    leftover = [segments[i] for i in range(len(segments)) if i not in used]
+    return points, leftover
+
+
+def _split_chains(segments):
+    """Разбивает отрезки на связные цепочки точек."""
+    chains = []
+    remaining = list(segments or [])
+    guard = 0
+    while remaining and guard < 10000:
+        guard += 1
+        pts, rest = _walk_chain(remaining)
+        if len(pts) < 2:
+            break
+        chains.append(pts)
+        if len(rest) >= len(remaining):
+            break
+        remaining = rest
+    return chains
+
+
+def _stitch_routes(routes, tol=1e-6):
+    """Собирает отрезки нескольких маршрутов в одну цепочку.
+
+    Цепочки упорядочиваются по ближайшим концам (направление при
+    необходимости разворачивается). Соединяются только реально совпадающие
+    концы, чтобы не появлялись лишние перемычки.
+    """
+    chains = []
+    for r in routes:
+        chains.extend(_split_chains(r.get('segments') or []))
+    if not chains:
+        return []
+
+    sequences = []
+    remaining = sorted(chains, key=len, reverse=True)
+    while remaining:
+        seq = list(remaining.pop(0))
+        changed = True
+        while changed:
+            changed = False
+            best = None
+            for idx, ch in enumerate(remaining):
+                options = (
+                    (_deg_distance(seq[-1], ch[0]), idx, 'end', False),
+                    (_deg_distance(seq[-1], ch[-1]), idx, 'end', True),
+                    (_deg_distance(seq[0], ch[0]), idx, 'start', True),
+                    (_deg_distance(seq[0], ch[-1]), idx, 'start', False),
+                )
+                for d, i2, where, rev in options:
+                    if best is None or d < best[0]:
+                        best = (d, i2, where, rev)
+            if best is not None and best[0] <= tol:
+                _, idx, where, rev = best
+                ch = remaining.pop(idx)
+                if rev:
+                    ch = list(reversed(ch))
+                if where == 'end':
+                    seq.extend(ch[1:] if _deg_distance(seq[-1], ch[0]) <= tol else ch)
+                else:
+                    seq = (ch[:-1] if _deg_distance(ch[-1], seq[0]) <= tol else ch) + seq
+                changed = True
+        sequences.append(seq)
+
+    segments = []
+    for seq in sequences:
+        for i in range(len(seq) - 1):
+            if _deg_distance(seq[i], seq[i + 1]) > 0:
+                segments.append([list(seq[i]), list(seq[i + 1])])
+    return segments
+
 class RoutesStore:
     """Маршруты KMZ + пользовательские папки."""
 
@@ -842,28 +963,46 @@ def delete_route(rid):
 @app.route('/merge', methods=['POST'])
 def merge():
     data = request.get_json() or {}
-    ids = data.get('ids', [])
-    name = data.get('name', 'Объединённый маршрут')
+    name = (data.get('name') or '').strip() or 'Объединённый маршрут'
+    raw_ids = data.get('ids')
+    if not isinstance(raw_ids, list):
+        return jsonify({'error': 'ids must be a list'}), 400
 
-    segments = []
-    for rid in ids:
+    routes, seen = [], set()
+    for rid in raw_ids:
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if rid in seen:
+            continue
+        seen.add(rid)
         r = _routes.get(rid)
         if r:
-            segments.extend(r.get('segments') or [])
+            routes.append(r)
 
+    if len(routes) < 2:
+        return jsonify({'error': 'need at least 2 routes'}), 400
+
+    segments = _stitch_routes(routes)
     if not segments:
-        return jsonify({'error': 'no segments'}), 400
+        return jsonify({'error': 'no geometry'}), 400
+
+    # папку сохраняем, если все части лежали в одной
+    folders = {(r.get('folder') or '') for r in routes}
+    folder = next(iter(folders)) if len(folders) == 1 else ''
+    visible = any(r.get('visible') for r in routes)
 
     rid = _routes.new_id()
     _routes.put({
         'id': rid, 'name': name, 'branch': name,
-        'folder': '', 'visible': True, 'segments': segments,
+        'folder': folder, 'visible': visible, 'segments': segments,
     })
-    for old in ids:
-        _routes.pop(old)
+    for r in routes:
+        _routes.pop(r['id'])
 
     _routes.touch()
-    return jsonify(_routes.get(rid))
+    return jsonify(_routes.get(rid)), 201
 
 
 @app.route('/export', methods=['POST'])

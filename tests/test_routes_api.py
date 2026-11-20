@@ -130,6 +130,49 @@ r = client.post('/routes', json={'name': 'ok', 'segments': SEG1},
                 headers={'Origin': 'http://localhost'})
 check('свой Origin -> 201', r.status_code == 201, r.status_code)
 
+print('8) объединение частей одной ветки')
+
+
+def seg_set(segs):
+    out = set()
+    for a, b in segs:
+        out.add(tuple(sorted([
+            (round(float(a[0]), 6), round(float(a[1]), 6)),
+            (round(float(b[0]), 6), round(float(b[1]), 6)),
+        ])))
+    return out
+
+
+a = client.post('/routes', json={'name': 'Часть 1', 'folder': 'Правка',
+                                 'segments': [[[0.0, 0.0], [1.0, 1.0]]]}).get_json()
+b = client.post('/routes', json={'name': 'Часть 2', 'folder': 'Правка',
+                                 'segments': [[[2.0, 2.0], [1.0, 1.0]]]}).get_json()
+r = client.post('/merge', json={'ids': [str(a['id']), str(b['id'])], 'name': 'Ветка'})
+body = r.get_json()
+expected = {((0.0, 0.0), (1.0, 1.0)), ((1.0, 1.0), (2.0, 2.0))}
+check('201', r.status_code == 201, r.status_code)
+check('имя задано', body.get('name') == 'Ветка', body.get('name'))
+check('папка сохранена', body.get('folder') == 'Правка', body.get('folder'))
+check('части сшиты в цепочку', seg_set(body.get('segments') or []) == expected,
+      body.get('segments'))
+ids_now = {x['id'] for x in client.get('/routes').get_json()}
+check('исходные удалены', a['id'] not in ids_now and b['id'] not in ids_now)
+
+solo = client.post('/routes', json={'segments': [[[5.0, 5.0], [5.1, 5.1]]]}).get_json()
+r = client.post('/merge', json={'ids': [solo['id']], 'name': 'x'})
+check('один маршрут -> 400', r.status_code == 400, r.get_json())
+r = client.post('/merge', json={'ids': 'nope', 'name': 'x'})
+check('ids не список -> 400', r.status_code == 400, r.get_json())
+r = client.post('/merge', json={'ids': [solo['id'], 999999], 'name': 'x'})
+check('несуществующие пропускаются', r.status_code == 400, r.get_json())
+
+c = client.post('/routes', json={'name': 'C', 'folder': 'A',
+                                 'segments': [[[10.0, 10.0], [10.1, 10.1]]]}).get_json()
+d = client.post('/routes', json={'name': 'D', 'folder': 'B',
+                                 'segments': [[[10.1, 10.1], [10.2, 10.2]]]}).get_json()
+r = client.post('/merge', json={'ids': [c['id'], d['id']], 'name': 'CD'})
+check('разные папки -> корень', r.get_json().get('folder') == '', r.get_json().get('folder'))
+
 server._routes.saver.cancel()
 print()
 if failures:
