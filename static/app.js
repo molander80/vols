@@ -288,7 +288,9 @@ function kmzFitToLinkedRoute(){
 }
 
 function kmzApplyFilters(){
-  const q = K.search.toLowerCase();
+  // в режимах правки/рисования поиск не прячет остальные маршруты:
+  // нужен контекст соседних линий
+  const q = (K.draw || K.editGeom) ? '' : K.search.toLowerCase();
   for (const r of K.routes){
     const layer = K.layers.get(r.id);
     if (!layer) continue;
@@ -792,11 +794,13 @@ function kmzDrawRender(){
 function kmzDrawStart(){
   if (K.draw) return;
   if (K.editGeom) kmzGeomCancel();
+  if (K.linked) kmzClearLink(false);
   K.draw = { segments: [], pending: null, line: null, dots: null };
   map.doubleClickZoom.disable();
   const btn = $('btnDraw');
   if (btn){ btn.classList.add('active'); btn.textContent = '✏️ Рисую…'; }
   kmzDrawRender();
+  kmzApplyFilters();
 }
 
 function kmzDrawStop(){
@@ -809,6 +813,7 @@ function kmzDrawStop(){
   const btn = $('btnDraw');
   if (btn){ btn.classList.remove('active'); btn.textContent = '✏️ Рисовать'; }
   kmzSnapHintShow(null);
+  kmzApplyFilters();
   const el = $('editHint');
   if (el) el.classList.add('hidden');
 }
@@ -995,6 +1000,7 @@ function kmzGeomBegin(routeId, { append = false } = {}){
   if (!r) return;
   if (K.draw) kmzDrawStop();
   if (K.editGeom) kmzGeomCancel();
+  if (K.linked) kmzClearLink(false);
 
   const segments = kmzRouteSegments(r).map(seg => seg.map(p => [p[0], p[1]]));
   K.editGeom = {
@@ -1025,6 +1031,7 @@ function kmzGeomBegin(routeId, { append = false } = {}){
     }
   }
   kmzGeomHint();
+  kmzApplyFilters();
 }
 
 function kmzGeomAppendBegin(routeId){
@@ -1129,6 +1136,7 @@ function kmzGeomCancel(){
   }
   K.editGeom = null;
   kmzSnapHintShow(null);
+  kmzApplyFilters();
   const el = $('editHint');
   if (el) el.classList.add('hidden');
 }
@@ -1450,7 +1458,7 @@ function kmzLinkRoute(routeId){
   });
 }
 
-function kmzClearLink(){
+function kmzClearLink(fit = true){
   if (!K.linked) return;
   K.linked = null;
   kmzApplyFilters();
@@ -1463,7 +1471,7 @@ function kmzClearLink(){
   kmzUpdateLinkBadge();
   gponApplyKmzLinkFilter();
   gponHighlightLinkedBranches();
-  setTimeout(() => kmzFitAll(), 100);
+  if (fit) setTimeout(() => kmzFitAll(), 100);
 }
 
 function kmzUpdateLinkBadge(){
