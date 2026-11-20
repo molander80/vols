@@ -223,6 +223,16 @@ function kmzBuildLayer(r){
   return L.layerGroup([halo, line]);
 }
 
+function kmzUpdateTooltips(){
+  for (const r of K.routes){
+    const group = K.layers.get(r.id);
+    if (!group || !group.getLayers) continue;
+    for (const layer of group.getLayers()){
+      if (layer.getTooltip && layer.getTooltip()) layer.setTooltipContent(r.name);
+    }
+  }
+}
+
 function kmzRemoveLayer(rid){
   const layer = K.layers.get(rid);
   if (!layer) return;
@@ -700,6 +710,7 @@ async function kmzLoadRoutes({ fit = true } = {}){
 
   if (fit && (wasEmpty || addedCount > 0)) kmzFitAll();
   kmzApplyFilters();
+  kmzUpdateTooltips();
   $('s-routes').textContent = K.routes.length;
 }
 
@@ -2563,6 +2574,52 @@ $('btnMerge').onclick = async () => {
   const data = await res.json().catch(() => ({}));
   if (!res.ok){
     alert('Не удалось объединить: ' + (data.error || res.status));
+    return;
+  }
+  K.mergeMarked.clear();
+  await kmzLoadRoutes({ fit: false });
+};
+
+$('btnRenameMask').onclick = async () => {
+  let ids = [...K.mergeMarked];
+  if (!ids.length){
+    const needle = prompt('Переименовать маршруты, в имени которых есть:', 'Измерение круга');
+    if (needle === null) return;
+    const q = needle.trim().toLowerCase();
+    if (!q) return;
+    ids = K.routes.filter(r => (r.name || '').toLowerCase().includes(q)).map(r => r.id);
+    if (!ids.length){
+      alert('Маршруты с таким текстом не найдены.');
+      return;
+    }
+  }
+
+  const tpl = prompt('Новое имя (символ # заменится на номер по порядку):', 'Муфта #');
+  if (tpl === null) return;
+  const template = tpl.trim();
+  if (!template) return;
+
+  // стабильная нумерация: сначала по папке, затем по старому имени
+  const ordered = ids
+    .map(id => K.routes.find(r => r.id === id))
+    .filter(Boolean)
+    .sort((a, b) => `${a.folder || ''}|${a.name || ''}`.localeCompare(`${b.folder || ''}|${b.name || ''}`, 'ru'))
+    .map(r => r.id);
+
+  let res;
+  try {
+    res = await fetch('/routes/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ordered, template }),
+    });
+  } catch (e){
+    alert('Не удалось переименовать: ' + e.message);
+    return;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok){
+    alert('Не удалось переименовать: ' + (data.error || res.status));
     return;
   }
   K.mergeMarked.clear();

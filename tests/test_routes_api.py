@@ -173,6 +173,36 @@ d = client.post('/routes', json={'name': 'D', 'folder': 'B',
 r = client.post('/merge', json={'ids': [c['id'], d['id']], 'name': 'CD'})
 check('разные папки -> корень', r.get_json().get('folder') == '', r.get_json().get('folder'))
 
+print('9) массовое переименование')
+ids = []
+for i in range(3):
+    rt = client.post('/routes', json={
+        'name': f'Круг {i + 1}', 'folder': 'Правка',
+        'segments': [[[20.0 + i, 20.0], [20.1 + i, 20.1]]],
+    }).get_json()
+    ids.append(rt['id'])
+
+r = client.post('/routes/rename', json={'ids': ids, 'template': 'Муфта #'})
+body = r.get_json()
+check('200', r.status_code == 200, r.status_code)
+check('переименовано 3', body.get('renamed') == 3, body)
+names = [x['name'] for x in client.get('/routes').get_json() if x['id'] in ids]
+check('нумерация по порядку', names == ['Муфта 1', 'Муфта 2', 'Муфта 3'], names)
+folders = {x['folder'] for x in client.get('/routes').get_json() if x['id'] in ids}
+check('папка не изменилась', folders == {'Правка'}, folders)
+
+r = client.post('/routes/rename', json={'ids': ids[:2], 'template': 'Узел'})
+names = [x['name'] for x in client.get('/routes').get_json() if x['id'] in ids[:2]]
+check('без # — одинаковые имена', names == ['Узел', 'Узел'], names)
+
+r = client.post('/routes/rename', json={'ids': 'nope', 'template': 'X'})
+check('ids не список -> 400', r.status_code == 400, r.get_json())
+r = client.post('/routes/rename', json={'ids': ids, 'template': '   '})
+check('пустой шаблон -> 400', r.status_code == 400, r.get_json())
+r = client.post('/routes/rename', json={'ids': [ids[0], ids[0], 999999], 'template': 'Дубль #'})
+check('дубликаты и несуществующие не считаются',
+      r.get_json().get('renamed') == 1, r.get_json())
+
 server._routes.saver.cancel()
 print()
 if failures:

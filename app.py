@@ -932,6 +932,41 @@ def patch_routes_bulk():
     return jsonify({'ok': True, 'applied': applied, 'ids': updated})
 
 
+@app.route('/routes/rename', methods=['POST'])
+def rename_routes():
+    """Массовое переименование по шаблону: '#' заменяется на номер по порядку."""
+    data = request.get_json() or {}
+    ids = data.get('ids')
+    template = (data.get('template') or '').strip()
+
+    if not isinstance(ids, list):
+        return jsonify({'error': 'ids must be a list'}), 400
+    if not template:
+        return jsonify({'error': 'template must not be empty'}), 400
+    if len(ids) > 5000:
+        return jsonify({'error': 'too many ids'}), 400
+
+    renamed, seen, n = 0, set(), 0
+    for rid in ids:
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if rid in seen:
+            continue
+        seen.add(rid)
+        n += 1
+        name = template.replace('#', str(n))
+        if _routes.patch(rid, {'name': name}) is None:
+            n -= 1
+            continue
+        renamed += 1
+
+    if renamed:
+        _routes.touch()
+    return jsonify({'ok': True, 'renamed': renamed})
+
+
 @app.route('/routes/bulk', methods=['DELETE'])
 def delete_routes_bulk():
     data = request.get_json(silent=True) or {}
