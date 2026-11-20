@@ -98,6 +98,26 @@ for (const [name, res, x, y, dist] of nearCases) {
     ok, `ожидалось (${x}, ${y}), d=${dist}`);
 }
 
+console.log('4) совмещение вершин');
+const merge = extractFunction('kmzMergeVertexSegments', ['segments', 'keep', 'drop']);
+
+const m1 = merge([[[0, 0], [1, 1]], [[5, 5], [6, 6]]], [1, 1], [5, 5]);
+check('две ветки соединяются в одной точке',
+  JSON.stringify(m1) === JSON.stringify([[[0, 0], [1, 1]], [[1, 1], [6, 6]]]),
+  JSON.stringify(m1));
+
+const m2 = merge([[[0, 0], [1, 1]], [[1, 1], [2, 2]]], [0, 0], [1, 1]);
+check('вырожденный отрезок убирается',
+  JSON.stringify(m2) === JSON.stringify([[[0, 0], [2, 2]]]), JSON.stringify(m2));
+
+const m3 = merge([[[6, 6], [5, 5]]], [1, 1], [5, 5]);
+check('конец отрезка переносится в другую точку',
+  JSON.stringify(m3) === JSON.stringify([[[6, 6], [1, 1]]]), JSON.stringify(m3));
+
+const m4 = merge([[[0, 0], [1, 1]]], [1, 1], [1, 1]);
+check('совмещение точки с собой безопасно',
+  JSON.stringify(m4) === JSON.stringify([[[0, 0], [1, 1]]]), JSON.stringify(m4));
+
 console.log();
 if (failed) {
   console.error(`${failed} из ${checks} проверок не прошли`);

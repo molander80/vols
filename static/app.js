@@ -904,6 +904,46 @@ function kmzGeomVertices(segments){
   return [...found.entries()].map(([key, pt]) => ({ key, pt }));
 }
 
+function kmzMergeVertexSegments(segments, keep, drop){
+  // все концы, совпадающие с drop, переносим в keep; вырожденные отрезки убираем
+  const k = p => `${Number(p[0]).toFixed(7)},${Number(p[1]).toFixed(7)}`;
+  const dropKey = k(drop);
+  const out = [];
+  for (const seg of segments){
+    const a = k(seg[0]) === dropKey ? [keep[0], keep[1]] : [seg[0][0], seg[0][1]];
+    const b = k(seg[1]) === dropKey ? [keep[0], keep[1]] : [seg[1][0], seg[1][1]];
+    if (k(a) === k(b)) continue;
+    out.push([a, b]);
+  }
+  return out;
+}
+
+function kmzGeomVertexByKey(key){
+  const ed = K.editGeom;
+  if (!ed) return null;
+  for (const seg of ed.segments){
+    for (const p of seg){
+      if (kmzGeomKey(p) === key) return [p[0], p[1]];
+    }
+  }
+  return null;
+}
+
+function kmzGeomMergeVertices(keepKey, dropKey){
+  const ed = K.editGeom;
+  if (!ed || keepKey === dropKey) return;
+  const keep = kmzGeomVertexByKey(keepKey);
+  const drop = kmzGeomVertexByKey(dropKey);
+  if (!keep || !drop) return;
+  kmzGeomPushHistory();
+  ed.segments = kmzMergeVertexSegments(ed.segments, keep, drop);
+  ed.selected = keepKey;
+  ed.pending = null;
+  ed.line.setLatLngs(ed.segments);
+  kmzGeomRenderMarkers();
+  kmzGeomHint();
+}
+
 function kmzGeomDegree(segments, key){
   let n = 0;
   for (const seg of segments){
@@ -924,7 +964,7 @@ function kmzGeomHint(text){
     const verts = kmzGeomVertices(ed.segments).length;
     const state = ed.pending ? ' · клик — конец отрезка' : ' · клик — начало отрезка';
     text = `${ed.append ? '➕' : '📐'} ${route ? route.name : 'маршрут'}: отрезков ${ed.segments.length} · вершин ${verts} · ${km} км${state} — ` +
-      'клик по вершине — выбрать или соединить, по линии — вставить точку, правый клик — удалить, Ctrl+Z — шаг назад, Enter — сохранить, Esc — отмена';
+      'клик по вершине — выбрать, Shift+клик — совместить точки, по линии — вставить, правый клик — удалить, Ctrl+Z — шаг назад, Enter — сохранить, Esc — отмена';
   }
   el.textContent = text;
   el.classList.remove('hidden');
@@ -950,6 +990,11 @@ function kmzGeomRenderMarkers(){
 
     marker.on('click', (e) => {
       L.DomEvent.stopPropagation(e);
+      // Shift+клик по второй вершине — слить её с выбранной
+      if (e.originalEvent && e.originalEvent.shiftKey && ed.selected && ed.selected !== key){
+        kmzGeomMergeVertices(ed.selected, key);
+        return;
+      }
       if (ed.pending && kmzGeomKey(ed.pending) !== key){
         kmzGeomConnect(ed.pending, pt);
         return;
@@ -972,7 +1017,7 @@ function kmzGeomRenderMarkers(){
     });
     marker.on('dragend', () => {
       const ll = marker.getLatLng();
-      const snap = kmzSnapFind(ll, ed.id);
+      const snap = kmzSnapFind(ll, ed.id, { includeOwn: true, skipKey: key });
       const final = snap ? [snap.latlng.lat, snap.latlng.lng] : [ll.lat, ll.lng];
       for (const seg of ed.segments){
         if (kmzGeomKey(seg[0]) === key) seg[0] = [final[0], final[1]];
@@ -1192,7 +1237,7 @@ function kmzClosestOnSegment(px, py, ax, ay, bx, by){
   return { x: cx, y: cy, dist: Math.hypot(px - cx, py - cy) };
 }
 
-function kmzSnapTargets(excludeRouteId){
+function kmzSnapTargets(excludeRouteId, opts = {}){
   const verts = [], segs = [];
   for (const r of K.routes){
     if (excludeRouteId != null && r.id === excludeRouteId) continue;
@@ -1206,13 +1251,23 @@ function kmzSnapTargets(excludeRouteId){
     for (const seg of K.draw.segments){ verts.push(seg[0], seg[1]); }
     if (K.draw.pending) verts.push(K.draw.pending);
   }
+  // при перетаскивании вершины — привязка к другим вершинам того же маршрута,
+  // чтобы две точки можно было точно совместить
+  if (K.editGeom && opts.includeOwn){
+    for (const seg of K.editGeom.segments){
+      for (const p of seg){
+        if (opts.skipKey && kmzGeomKey(p) === opts.skipKey) continue;
+        verts.push(p);
+      }
+    }
+  }
   return { verts, segs };
 }
 
-function kmzSnapFind(latlng, excludeRouteId){
+function kmzSnapFind(latlng, excludeRouteId, opts = {}){
   if (!K.snap) return null;
   const p = map.latLngToContainerPoint(latlng);
-  const { verts, segs } = kmzSnapTargets(excludeRouteId);
+  const { verts, segs } = kmzSnapTargets(excludeRouteId, opts);
   let best = null, bestD = SNAP_PIXELS;
 
   // сначала вершины: привязка к существующей точке важнее, чем к линии
