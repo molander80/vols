@@ -2580,6 +2580,39 @@ $('btnMerge').onclick = async () => {
   await kmzLoadRoutes({ fit: false });
 };
 
+$('btnMoveToFolder').onclick = async () => {
+  let ids = [...K.mergeMarked];
+  if (!ids.length){
+    const needle = prompt('Перенести маршруты, в имени которых есть:', 'Муфта');
+    if (needle === null) return;
+    const q = needle.trim().toLowerCase();
+    if (!q) return;
+    ids = K.routes.filter(r => (r.name || '').toLowerCase().includes(q)).map(r => r.id);
+    if (!ids.length){
+      alert('Маршруты с таким текстом не найдены.');
+      return;
+    }
+  }
+
+  const folder = prompt(`Перенести ${ids.length} маршрут(ов) в папку:`, 'Муфта');
+  if (folder === null) return;
+  const clean = folder.trim().replace(/^\/+|\/+$/g, '');
+  if (!clean) return;
+
+  for (const r of K.routes){
+    if (ids.includes(r.id)) r.folder = clean;
+  }
+  K.customFolders.add(clean);
+  K.expandedFolders.add(clean);
+  kmzRenderTree();
+
+  await patchRoutesBulk(ids, { folder: clean });
+  await kmzFolderAdd(clean);
+  await kmzLoadFolders();
+  K.mergeMarked.clear();
+  kmzRenderTree();
+};
+
 $('btnRenameMask').onclick = async () => {
   let ids = [...K.mergeMarked];
   if (!ids.length){

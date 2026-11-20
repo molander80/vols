@@ -203,6 +203,25 @@ r = client.post('/routes/rename', json={'ids': [ids[0], ids[0], 999999], 'templa
 check('дубликаты и несуществующие не считаются',
       r.get_json().get('renamed') == 1, r.get_json())
 
+print('10) массовый перенос в папку')
+ids = []
+for i in range(2):
+    rt = client.post('/routes', json={
+        'name': f'Перенос {i + 1}', 'folder': 'Старая',
+        'segments': [[[30.0 + i, 30.0], [30.1 + i, 30.1]]],
+    }).get_json()
+    ids.append(rt['id'])
+
+r = client.patch('/routes/bulk', json={'ids': ids, 'patch': {'folder': 'Муфта'}})
+check('applied 2', r.get_json().get('applied') == 2, r.get_json())
+folders = {x['folder'] for x in client.get('/routes').get_json() if x['id'] in ids}
+check('папки изменены', folders == {'Муфта'}, folders)
+
+r = client.patch('/routes/bulk', json={'ids': ids, 'patch': {'points': []}})
+check('недопустимый ключ -> 400', r.status_code == 400, r.get_json())
+r = client.patch('/routes/bulk', json={'ids': 'nope', 'patch': {'folder': 'X'}})
+check('ids не список -> 400', r.status_code == 400, r.get_json())
+
 server._routes.saver.cancel()
 print()
 if failures:
