@@ -378,8 +378,8 @@ function kmzRenderTree(){
   const c = $('folderTree');
   if (!c) return;
   c.innerHTML = '';
-  kmzRenderClosures(c);
   kmzRenderNode(kmzBuildTree(), c, [], true);
+  renderClosureTree();
 
   if (K.linked?.type === 'route'){
     kmzCollapseExceptRoute(K.linked.id);
@@ -769,7 +769,7 @@ function kmzDrawHint(text){
     const n = K.draw ? K.draw.segments.length : 0;
     const km = K.draw ? kmzSegmentsDistanceKm(K.draw.segments) : 0;
     const tail = K.draw && K.draw.pending ? 'клик задаёт конец отрезка' : 'клик задаёт начало отрезка';
-    text = `✏️ Отрезков: ${n} · ${km.toFixed(2)} км — ${tail} · правый клик/Ctrl+Z — убрать отрезок, Enter — сохранить, Esc — завершить`;
+    text = `✏️ Отрезков: ${n} · ${km.toFixed(2)} км — ${tail} · Ctrl+Z — убрать отрезок, правый клик — меню, Enter — сохранить, Esc — завершить`;
   }
   el.textContent = text;
   el.classList.remove('hidden');
@@ -935,6 +935,13 @@ function closureCollectClosures(node){
   const out = [...node.closures];
   for (const child of node.children.values()) out.push(...closureCollectClosures(child));
   return out;
+}
+
+function renderClosureTree(){
+  const c = $('closureTree');
+  if (!c) return;
+  c.innerHTML = '';
+  kmzRenderClosures(c);
 }
 
 function kmzRenderClosures(container){
@@ -3007,10 +3014,91 @@ map.on('click', (e) => {
   gponClearBranchHighlight();
 });
 
+function mapMenuClose(){
+  const el = $('mapMenu');
+  if (el) el.classList.add('hidden');
+}
+
+function mapMenuShow(latlng, containerPoint, items){
+  const el = $('mapMenu');
+  if (!el) return;
+  el.innerHTML = '';
+  for (const item of items){
+    if (item === '-'){
+      const sep = document.createElement('div');
+      sep.className = 'menu-sep';
+      el.appendChild(sep);
+      continue;
+    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'menu-item';
+    b.textContent = item.label;
+    b.onclick = ev => { ev.stopPropagation(); mapMenuClose(); item.action(); };
+    el.appendChild(b);
+  }
+  el.classList.remove('hidden');
+
+  const rect = map.getContainer().getBoundingClientRect();
+  el.style.left = (rect.left + containerPoint.x) + 'px';
+  el.style.top = (rect.top + containerPoint.y) + 'px';
+  requestAnimationFrame(() => {
+    const r = el.getBoundingClientRect();
+    const maxX = window.innerWidth - r.width - 8;
+    const maxY = window.innerHeight - r.height - 8;
+    if (r.left > maxX) el.style.left = Math.max(8, maxX) + 'px';
+    if (r.top > maxY) el.style.top = Math.max(8, maxY) + 'px';
+  });
+}
+
+function kmzFindNearestRoute(latlng, maxPx = 24){
+  const p = map.latLngToContainerPoint(latlng);
+  let best = null, bestD = maxPx;
+  for (const r of K.routes){
+    for (const seg of kmzRouteSegments(r)){
+      const a = map.latLngToContainerPoint(seg[0]);
+      const b = map.latLngToContainerPoint(seg[1]);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+      if (d < bestD){ bestD = d; best = r; }
+    }
+  }
+  return best;
+}
+
+map.on('click', () => mapMenuClose());
+map.on('zoomstart movestart', () => mapMenuClose());
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') mapMenuClose();
+});
+
 map.on('contextmenu', (e) => {
-  if (!K.draw) return;
   L.DomEvent.preventDefault(e);
-  kmzDrawUndoPoint();
+  L.DomEvent.stopPropagation(e);
+
+  const items = [];
+  if (K.editGeom){
+    items.push({ label: '➕ Добавить точку здесь', action: () => kmzGeomAddPoint(e.latlng) });
+    items.push({ label: '↩ Отменить шаг', action: () => kmzGeomUndo() });
+    items.push('-');
+  }
+  if (K.draw){
+    items.push({ label: '↩ Убрать последний отрезок', action: () => kmzDrawUndoPoint() });
+    items.push('-');
+  }
+  items.push({ label: '📍 Поставить муфту здесь', action: () => closureAddAt(e.latlng) });
+  items.push({ label: '✏️ Начать маршрут здесь', action: () => {
+    kmzDrawStart();
+    kmzDrawAddPoint(e.latlng);
+  } });
+  const near = kmzFindNearestRoute(e.latlng);
+  if (near){
+    items.push({ label: `📐 Редактировать «${near.name}»`, action: () => kmzGeomBegin(near.id) });
+  }
+  mapMenuShow(e.latlng, e.containerPoint, items);
 });
 
 document.addEventListener('keydown', (e) => {
@@ -3391,6 +3479,59 @@ $('theme').onclick = () =>
 
 $('btnMarkersVis').onclick = () => gponSetMarkersVisible(!G.markersVisible);
 
+/* ==========================================================================
+   UI — меню редактирования, сворачивание панели, вкладки
+   ========================================================================== */
+function editMenuToggle(force){
+  const panel = $('editMenuPanel');
+  const btn = $('btnEditMenu');
+  if (!panel || !btn) return;
+  const open = typeof force === 'boolean' ? force : panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !open);
+  btn.classList.toggle('active', open);
+}
+$('btnEditMenu').onclick = e => { e.stopPropagation(); editMenuToggle(); };
+document.addEventListener('click', e => {
+  if (!e.target.closest('#editMenu')) editMenuToggle(false);
+});
+document.querySelectorAll('#editMenuPanel .menu-item').forEach(b => {
+  b.addEventListener('click', () => editMenuToggle(false));
+});
+
+function setCompact(on){
+  const bar = document.querySelector('.topbar');
+  if (!bar) return;
+  bar.classList.toggle('compact', on);
+  const btn = $('btnCollapse');
+  if (btn) btn.textContent = on ? '▾' : '▴';
+  try { localStorage.setItem('ui-compact', on ? '1' : '0'); } catch(_) {}
+}
+$('btnCollapse').onclick = () =>
+  setCompact(!document.querySelector('.topbar').classList.contains('compact'));
+
+function setSideTab(tab){
+  document.querySelectorAll('.side-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.side-panel').forEach(p =>
+    p.classList.toggle('hidden', p.dataset.panel !== tab));
+  try { localStorage.setItem('side-tab', tab); } catch(_) {}
+}
+document.querySelectorAll('.side-tab').forEach(b => {
+  b.onclick = () => setSideTab(b.dataset.tab);
+});
+
+const TOOL_BUTTONS = {
+  btnToolsDraw: 'btnDraw',
+  btnToolsClosure: 'btnAddClosure',
+  btnToolsMerge: 'btnMerge',
+  btnToolsRename: 'btnRenameMask',
+  btnToolsMove: 'btnMoveToFolder',
+};
+for (const [toolId, targetId] of Object.entries(TOOL_BUTTONS)){
+  const el = $(toolId);
+  if (el) el.onclick = () => $(targetId).click();
+}
+
 (async function init(){
   // восстанавливаем видимость меток ДО того, как загрузятся данные
   const savedVis = localStorage.getItem('gpon-markers-visible');
@@ -3401,6 +3542,8 @@ $('btnMarkersVis').onclick = () => gponSetMarkersVisible(!G.markersVisible);
   await closuresLoad();
   await gponLoadState();
   setMode('kmz');
+  setCompact(localStorage.getItem('ui-compact') === '1');
+  setSideTab(localStorage.getItem('side-tab') || 'routes');
   $('s-found').textContent = '—';
   $('btnMarkersVis').textContent = G.markersVisible ? '👁️' : '🙈';
   $('btnMarkersVis').title = G.markersVisible ? 'Скрыть GPON-метки' : 'Показать GPON-метки';

@@ -312,6 +312,38 @@ button,input,select{font:inherit;color:inherit}
 .leaflet-popup-content-wrapper{background:var(--panel);color:var(--text);border:1px solid var(--line)}
 .leaflet-popup-tip{background:var(--panel);border:1px solid var(--line)}
 
+/* Выпадающее меню редактирования */
+.dropdown{position:relative}
+.dropdown-panel{position:absolute;top:calc(100% + 6px);left:0;z-index:80;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:var(--shadow);padding:6px;min-width:230px;
+  display:flex;flex-direction:column;gap:2px}
+.menu-item{background:none;border:none;text-align:left;padding:7px 10px;
+  border-radius:6px;cursor:pointer;color:var(--text);font-size:13px}
+.menu-item:hover{background:var(--panel-2);color:var(--accent)}
+.menu-item.active{color:var(--accent)}
+.menu-sep{height:1px;background:var(--line);margin:4px 2px}
+
+/* Сворачиваемая панель */
+.topbar.compact #kmzControls,
+.topbar.compact #gponControls,
+.topbar.compact .stats{display:none!important}
+
+/* Вкладки сайдбара */
+.side-tabs{display:flex;gap:4px;margin-bottom:10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.side-tab{flex:1;background:none;border:none;color:var(--muted);padding:6px 4px;
+  cursor:pointer;font-size:12px;border-radius:6px}
+.side-tab:hover{color:var(--accent)}
+.side-tab.active{background:var(--panel);color:var(--accent)}
+.side-tools{display:flex;flex-direction:column;gap:6px}
+.side-tools .btn{justify-content:flex-start}
+.side-help{font-size:12px;color:var(--muted);line-height:1.5;margin-top:8px}
+
+/* Контекстное меню карты */
+.map-menu{position:fixed;z-index:3000;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;box-shadow:var(--shadow);padding:6px;min-width:250px}
+.map-menu .menu-item{width:100%;display:block}
+
 .hidden{display:none!important}
 
 @media (max-width:860px){
@@ -334,12 +366,18 @@ button,input,select{font:inherit;color:inherit}
       <button class="btn" id="btnUploadFiles">📂 KMZ</button>
       <button class="btn" id="btnUploadFolder">📁 Папка</button>
       <button class="btn" id="btnNewFolder">📁+</button>
-      <button class="btn" id="btnDraw" title="Нарисовать маршрут на карте">✏️ Рисовать</button>
-      <button class="btn active" id="btnSnap" title="Привязка к вершинам и линиям">🧲 Привязка</button>
-      <button class="btn" id="btnMerge" title="Объединить отмеченные маршруты в один">🧩 Объединить</button>
-      <button class="btn" id="btnRenameMask" title="Массовое переименование: отмеченные или найденные по тексту">🏷 Имена</button>
-      <button class="btn" id="btnMoveToFolder" title="Перенести отмеченные или найденные по тексту маршруты в папку">📁→ В папку</button>
-      <button class="btn" id="btnAddClosure" title="Поставить муфту на карту">📍 Муфта</button>
+      <div class="dropdown" id="editMenu">
+        <button class="btn" id="btnEditMenu" title="Инструменты редактирования">✏️ Редактирование ▾</button>
+        <div class="dropdown-panel hidden" id="editMenuPanel">
+          <button class="menu-item" id="btnDraw" title="Нарисовать маршрут на карте">✏️ Рисовать</button>
+          <button class="menu-item" id="btnSnap" title="Привязка к вершинам и линиям">🧲 Привязка</button>
+          <button class="menu-item" id="btnAddClosure" title="Поставить муфту на карту">📍 Муфта</button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" id="btnMerge" title="Объединить отмеченные маршруты в один">🧩 Объединить</button>
+          <button class="menu-item" id="btnRenameMask" title="Массовое переименование: отмеченные или найденные по тексту">🏷 Имена</button>
+          <button class="menu-item" id="btnMoveToFolder" title="Перенести отмеченные или найденные по тексту маршруты в папку">📁→ В папку</button>
+        </div>
+      </div>
       <button class="btn" id="btnExport">💾 KMZ</button>
       <button class="btn" id="btnExportTree" title="Сохранить дерево маршрутов на диск (uploads/tree/)">📥 Выгрузить дерево</button>
       <input type="file" id="fileInput" multiple accept=".kmz,.kml" style="display:none">
@@ -360,6 +398,7 @@ button,input,select{font:inherit;color:inherit}
     <input class="input" id="search" placeholder="🔎 Поиск…">
     <button class="btn icon" id="theme" title="Тема">🌙</button>
     <button class="btn icon" id="btnMarkersVis" title="Скрыть GPON-метки">👁️</button>
+    <button class="btn icon" id="btnCollapse" title="Свернуть панель инструментов">▴</button>
 
     <div class="iso-badge hidden" id="linkBadge" title="Связка KMZ ↔ GPON">
       <span id="linkBadgeText"></span>
@@ -375,8 +414,32 @@ button,input,select{font:inherit;color:inherit}
   <div class="main">
     <aside class="sidebar" id="sidebar">
       <div id="sidebarKmz">
-        <div class="side-title">Дерево маршрутов</div>
-        <div id="folderTree"></div>
+        <div class="side-tabs">
+          <button class="side-tab active" data-tab="routes">Маршруты</button>
+          <button class="side-tab" data-tab="closures">Муфты</button>
+          <button class="side-tab" data-tab="tools">Инструменты</button>
+        </div>
+        <div class="side-panel" data-panel="routes">
+          <div class="side-title">Дерево маршрутов</div>
+          <div id="folderTree"></div>
+        </div>
+        <div class="side-panel hidden" data-panel="closures">
+          <div class="side-title">Муфты</div>
+          <div id="closureTree"></div>
+        </div>
+        <div class="side-panel hidden" data-panel="tools">
+          <div class="side-title">Инструменты</div>
+          <div class="side-tools">
+            <button class="btn" id="btnToolsDraw">✏️ Нарисовать маршрут</button>
+            <button class="btn" id="btnToolsClosure">📍 Поставить муфту</button>
+            <button class="btn" id="btnToolsMerge">🧩 Объединить отмеченные</button>
+            <button class="btn" id="btnToolsRename">🏷 Переименовать</button>
+            <button class="btn" id="btnToolsMove">📁→ Перенести в папку</button>
+            <div class="side-help">Отмечайте маршруты кнопкой ◻ в строках дерева.
+              «Рисовать» и «Муфта» работают кликом по карте, Esc — отмена режима.
+              Правый клик по карте открывает быстрое меню.</div>
+          </div>
+        </div>
       </div>
       <div id="sidebarGpon" class="hidden">
         <div class="diag" id="diag">Загрузите Excel (geo*.xlsx) и vgroups.csv.</div>
@@ -392,6 +455,7 @@ button,input,select{font:inherit;color:inherit}
     <main class="content">
       <div id="map"></div>
       <div id="editHint" class="hidden"></div>
+      <div id="mapMenu" class="map-menu hidden"></div>
     </main>
   </div>
 </div>
