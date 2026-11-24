@@ -15,7 +15,8 @@ import threading
 import xml.etree.ElementTree as ET
 import zipfile
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file, Response
+import sqlite3
 import simplekml
 import sys
 import os
@@ -46,11 +47,13 @@ def resource_path(relative_path):
 
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
+MAPS_DIR = os.path.join(BASE_DIR, 'maps')
 STATE_FILE = os.path.join(DATA_DIR, 'state.json')
 GPON_FILE = os.path.join(DATA_DIR, 'gpon_state.json')
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(MAPS_DIR, exist_ok=True)
 
 app = Flask(
     __name__,
@@ -58,7 +61,7 @@ app = Flask(
     static_folder=resource_path('static'),
 )
 # Лимит на размер загружаемого файла: без него /upload принимал что угодно
-app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256 МБ
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 ГБ (KMZ и .mbtiles)
 
 # Кириллица в JSON без \uXXXX: /gpon/state отдаёт мегабайты адресов,
 # экранирование раздувало ответ примерно в 2.2 раза
@@ -1728,6 +1731,189 @@ def gpon_state_import():
         'geoFiles': _gpon.geo_files,
         'vgFile': _gpon.vg_file,
     })
+
+
+# ============================ Offline maps (MBTiles) ============================
+
+MAP_NAME_RE = re.compile(r'^[^\x00-\x1f/\\:*?"<>|]+\.mbtiles$', re.IGNORECASE)
+
+
+def _safe_map_filename(name):
+    """Только имя файла .mbtiles без путей и служебных символов."""
+    name = os.path.basename((name or '').strip())
+    if not name.lower().endswith('.mbtiles') or name.startswith('.'):
+        return None
+    if not MAP_NAME_RE.match(name):
+        return None
+    return name
+
+
+def _mbtiles_info(path):
+    """Читает метаданные MBTiles; None, если файл не похож на MBTiles."""
+    try:
+        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=3)
+    except sqlite3.Error:
+        return None
+    try:
+        try:
+            meta = {str(k): str(v) for k, v in
+                    conn.execute('SELECT name, value FROM metadata').fetchall()}
+        except sqlite3.Error:
+            meta = {}
+
+        try:
+            has_tiles = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='tiles'"
+            ).fetchone() is not None
+        except sqlite3.Error:
+            return None
+        if not has_tiles:
+            return None
+
+        def _int(value):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return None
+
+        minzoom = _int(meta.get('minzoom'))
+        maxzoom = _int(meta.get('maxzoom'))
+        if minzoom is None or maxzoom is None:
+            try:
+                row = conn.execute(
+                    'SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles'
+                ).fetchone()
+                if row:
+                    if minzoom is None:
+                        minzoom = _int(row[0])
+                    if maxzoom is None:
+                        maxzoom = _int(row[1])
+            except sqlite3.Error:
+                pass
+
+        bounds = None
+        if meta.get('bounds'):
+            try:
+                parts = [float(x) for x in meta['bounds'].split(',')]
+                if len(parts) == 4:
+                    bounds = parts
+            except ValueError:
+                bounds = None
+
+        return {
+            'file': os.path.basename(path),
+            'name': os.path.splitext(os.path.basename(path))[0],
+            'size': os.path.getsize(path),
+            'minzoom': minzoom,
+            'maxzoom': maxzoom,
+            'scheme': 'xyz' if meta.get('scheme', '').lower() == 'xyz' else 'tms',
+            'bounds': bounds,
+            'center': meta.get('center'),
+        }
+    finally:
+        conn.close()
+
+
+def _maps_list():
+    items = []
+    try:
+        names = sorted(os.listdir(MAPS_DIR))
+    except OSError:
+        return items
+    for fn in names:
+        path = os.path.join(MAPS_DIR, fn)
+        if os.path.isfile(path) and fn.lower().endswith('.mbtiles'):
+            info = _mbtiles_info(path)
+            if info:
+                items.append(info)
+    return items
+
+
+def _map_file(name):
+    safe = _safe_map_filename(name)
+    if not safe:
+        return None
+    path = os.path.join(MAPS_DIR, safe)
+    return path if os.path.isfile(path) else None
+
+
+@app.route('/maps', methods=['GET'])
+def maps_list_route():
+    return jsonify(_maps_list())
+
+
+@app.route('/maps', methods=['POST'])
+def maps_upload_route():
+    upload = request.files.get('file')
+    if upload is None or not upload.filename:
+        return jsonify({'error': 'file is required'}), 400
+    name = _safe_map_filename(upload.filename)
+    if not name:
+        return jsonify({'error': 'only .mbtiles files are supported'}), 400
+
+    dest = os.path.join(MAPS_DIR, name)
+    tmp = dest + '.part'
+    upload.save(tmp)
+    try:
+        if _mbtiles_info(tmp) is None:
+            return jsonify({'error': 'not a valid MBTiles file'}), 400
+        os.replace(tmp, dest)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return jsonify(_mbtiles_info(dest)), 201
+
+
+@app.route('/maps/<name>', methods=['DELETE'])
+def maps_delete_route(name):
+    path = _map_file(name)
+    if not path:
+        return jsonify({'error': 'not found'}), 404
+    try:
+        os.remove(path)
+    except OSError as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify({'ok': True})
+
+
+@app.route('/maps/<name>/tile/<int:z>/<int:x>/<int:y>')
+def maps_tile_route(name, z, x, y):
+    path = _map_file(name)
+    if not path or z < 0 or x < 0 or y < 0:
+        return ('', 404)
+    try:
+        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=3)
+    except sqlite3.Error:
+        return ('', 500)
+    try:
+        row = conn.execute(
+            'SELECT tile_data FROM tiles '
+            'WHERE zoom_level=? AND tile_column=? AND tile_row=?',
+            (z, x, y),
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        conn.close()
+
+    if not row:
+        return ('', 204)
+    data = row[0]
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        mime = 'image/png'
+    elif data[:2] == b'\xff\xd8':
+        mime = 'image/jpeg'
+    elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        mime = 'image/webp'
+    else:
+        mime = 'application/octet-stream'
+    return Response(data, mimetype=mime,
+                    headers={'Cache-Control': 'public, max-age=86400'})
 
 
 # ============================ Boot ============================

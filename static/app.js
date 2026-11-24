@@ -44,6 +44,172 @@ const patchRoutesBulk = (ids, patch) => {
   }).catch(err => console.warn('bulk patch failed', err));
 };
 
+/* ==========================================================================
+   BASEMAPS — онлайн и локальные MBTiles
+   ========================================================================== */
+function mapLayerForLocal(m){
+  if (localLayers.has(m.file)) return localLayers.get(m.file);
+  const layer = L.tileLayer(`/maps/${encodeURIComponent(m.file)}/tile/{z}/{x}/{y}.png`, {
+    minZoom: Number.isFinite(m.minzoom) ? m.minzoom : 0,
+    maxZoom: Number.isFinite(m.maxzoom) ? m.maxzoom : 19,
+    tms: m.scheme !== 'xyz',
+    attribution: `Локальная карта: ${m.name}`,
+  });
+  localLayers.set(m.file, layer);
+  return layer;
+}
+
+function mapsMenuToggle(force){
+  const menu = $('mapsMenu');
+  const btn = $('btnMaps');
+  if (!menu || !btn) return;
+  const open = typeof force === 'boolean' ? force : menu.classList.contains('hidden');
+  menu.classList.toggle('hidden', !open);
+  btn.classList.toggle('active', open);
+}
+
+function mapsRenderMenu(){
+  const menu = $('mapsMenu');
+  if (!menu) return;
+  menu.innerHTML = '';
+
+  const sel = K.baseSel || { kind: 'online', name: 'OSM DE' };
+
+  const caption = (text) => {
+    const d = document.createElement('div');
+    d.className = 'menu-caption';
+    d.textContent = text;
+    menu.appendChild(d);
+  };
+
+  caption('Онлайн');
+  for (const name of Object.keys(basemaps)){
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'menu-item' + (sel.kind === 'online' && sel.name === name ? ' active' : '');
+    b.textContent = name;
+    b.onclick = () => mapsSetBase('online', name);
+    menu.appendChild(b);
+  }
+
+  caption('Локальные (офлайн)');
+  if (!K.localMaps.length){
+    const d = document.createElement('div');
+    d.className = 'menu-hint';
+    d.textContent = 'Файлы .mbtiles не найдены';
+    menu.appendChild(d);
+  }
+  for (const m of K.localMaps){
+    const row = document.createElement('div');
+    row.className = 'menu-row';
+
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'menu-item' + (sel.kind === 'local' && sel.name === m.file ? ' active' : '');
+    b.textContent = '🗺 ' + m.name;
+    const zmin = Number.isFinite(m.minzoom) ? m.minzoom : '?';
+    const zmax = Number.isFinite(m.maxzoom) ? m.maxzoom : '?';
+    b.title = `${m.file} · z${zmin}–${zmax} · ${(m.size / 1048576).toFixed(1)} МБ`;
+    b.onclick = () => mapsSetBase('local', m.file);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'menu-del';
+    del.textContent = '🗑';
+    del.title = 'Удалить карту из приложения';
+    del.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Удалить карту «${m.name}»?`)) return;
+      try {
+        await fetch(`/maps/${encodeURIComponent(m.file)}`, { method: 'DELETE' });
+      } catch (err){ console.warn('map delete failed', err); }
+      if (K.baseSel?.kind === 'local' && K.baseSel.name === m.file){
+        mapsSetBase('online', 'OSM DE');
+      }
+      await mapsLoad();
+    };
+
+    row.append(b, del);
+    menu.appendChild(row);
+  }
+
+  const up = document.createElement('button');
+  up.type = 'button';
+  up.className = 'menu-item';
+  up.textContent = '📤 Загрузить .mbtiles…';
+  up.onclick = () => {
+    mapsMenuToggle(false);
+    $('mapFileInput').click();
+  };
+  menu.appendChild(up);
+}
+
+function mapsSetBase(kind, name){
+  const layer = kind === 'online'
+    ? basemaps[name]
+    : (() => {
+        const m = K.localMaps.find(x => x.file === name);
+        return m ? mapLayerForLocal(m) : null;
+      })();
+  if (!layer) return;
+  for (const l of Object.values(basemaps)) if (map.hasLayer(l)) map.removeLayer(l);
+  for (const l of localLayers.values()) if (map.hasLayer(l)) map.removeLayer(l);
+  layer.addTo(map);
+  activeBase = layer;
+  K.baseSel = { kind, name };
+  try { localStorage.setItem('base-map', JSON.stringify(K.baseSel)); } catch(_) {}
+  mapsRenderMenu();
+  mapsMenuToggle(false);
+}
+
+async function mapsLoad(){
+  try {
+    const res = await fetch('/maps');
+    K.localMaps = await res.json();
+  } catch (e){
+    K.localMaps = [];
+  }
+  mapsRenderMenu();
+
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('base-map') || 'null'); } catch(_) {}
+  if (saved?.kind === 'local' && K.localMaps.some(m => m.file === saved.name)){
+    mapsSetBase('local', saved.name);
+    return;
+  }
+  mapsSetBase('online', saved?.kind === 'online' && basemaps[saved.name] ? saved.name : 'OSM DE');
+}
+
+$('btnMaps').onclick = e => { e.stopPropagation(); mapsMenuToggle(); };
+document.addEventListener('click', e => {
+  if (!e.target.closest('#mapsWrap')) mapsMenuToggle(false);
+});
+
+$('mapFileInput').onchange = async () => {
+  const file = $('mapFileInput').files?.[0];
+  if (!file) return;
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  let res;
+  try {
+    res = await fetch('/maps', { method: 'POST', body: fd });
+  } catch (e){
+    alert('Не удалось загрузить карту: ' + e.message);
+    return;
+  }
+  const data = await res.json().catch(() => ({}));
+  $('mapFileInput').value = '';
+  if (!res.ok){
+    alert('Не удалось загрузить карту: ' + (data.error || res.status));
+    return;
+  }
+  await mapsLoad();
+  mapsSetBase('local', data.file);
+};
+
+
 const createRoute = (payload) =>
   fetch('/routes', {
     method: 'POST',
@@ -72,6 +238,8 @@ const K = {
   snapHint: null,
   geomUndoStack: [],
   snap: true,
+  localMaps: [],
+  baseSel: null,
   closures: [],
   closureFolders: new Set(),
   expandedClosureFolders: new Set(),
@@ -110,8 +278,8 @@ const basemaps = {
   'Carto Светлая': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }),
   'Carto Тёмная': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }),
 };
-basemaps['OSM DE'].addTo(map);
-L.control.layers(basemaps, null, { position: 'topright', collapsed: false }).addTo(map);
+let activeBase = null;
+const localLayers = new Map();
 
 let __curPopup = null;
 
@@ -3643,6 +3811,7 @@ async function moveClosuresToFolder(){
   await kmzLoadRoutes();
   await kmzLoadFolders();
   await closuresLoad();
+  await mapsLoad();
   await gponLoadState();
   setMode('kmz');
   setCompact(localStorage.getItem('ui-compact') === '1');

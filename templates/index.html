@@ -344,6 +344,16 @@ button,input,select{font:inherit;color:inherit}
   border-radius:10px;box-shadow:var(--shadow);padding:6px;min-width:250px}
 .map-menu .menu-item{width:100%;display:block}
 
+/* Меню карт */
+.menu-caption{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);
+  padding:6px 10px 2px}
+.menu-hint{font-size:12px;color:var(--muted);padding:4px 10px}
+.menu-row{display:flex;align-items:center;gap:4px}
+.menu-row .menu-item{flex:1}
+.menu-del{background:none;border:none;cursor:pointer;color:var(--muted);padding:6px 8px;
+  border-radius:6px;font-size:13px}
+.menu-del:hover{color:#ef4444}
+
 .hidden{display:none!important}
 
 @media (max-width:860px){
@@ -361,6 +371,12 @@ button,input,select{font:inherit;color:inherit}
       <button id="modeKmz" class="active" data-mode="kmz">🗺️ Маршруты KMZ</button>
       <button id="modeGpon" data-mode="gpon">📡 GPON</button>
     </div>
+
+    <div class="dropdown" id="mapsWrap">
+      <button class="btn" id="btnMaps" title="Выбрать карту: онлайн или локальную (.mbtiles)">🗺 Карта ▾</button>
+      <div class="dropdown-panel hidden" id="mapsMenu"></div>
+    </div>
+    <input type="file" id="mapFileInput" accept=".mbtiles" style="display:none">
 
     <div id="kmzControls" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn" id="btnUploadFiles">📂 KMZ</button>
