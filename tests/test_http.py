@@ -26,8 +26,8 @@ def check(name, cond, detail=''):
 
 
 print('1) лимит размера загрузки')
-check('MAX_CONTENT_LENGTH = 256 МБ',
-      app.app.config.get('MAX_CONTENT_LENGTH') == 256 * 1024 * 1024,
+check('MAX_CONTENT_LENGTH = 2 ГБ',
+      app.app.config.get('MAX_CONTENT_LENGTH') == 2 * 1024 * 1024 * 1024,
       app.app.config.get('MAX_CONTENT_LENGTH'))
 
 print('2) локальная статика вместо CDN')
