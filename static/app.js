@@ -74,6 +74,7 @@ const K = {
   snap: true,
   closures: [],
   closureFolders: new Set(),
+  expandedClosureFolders: new Set(),
   closuresHidden: new Set(),
   closureMarkers: new Map(),
   closureMode: false,
@@ -931,6 +932,13 @@ function closureBuildTree(){
   return root;
 }
 
+function closureExpandFolder(pathStr){
+  const parts = String(pathStr || 'Муфты').split('/').filter(Boolean);
+  for (let i = 1; i <= parts.length; i++){
+    K.expandedClosureFolders.add(parts.slice(0, i).join('/'));
+  }
+}
+
 function closureCollectClosures(node){
   const out = [...node.closures];
   for (const child of node.children.values()) out.push(...closureCollectClosures(child));
@@ -982,15 +990,18 @@ function closureMakeFolderRow(node, pathStr){
   });
   row.addEventListener('dragend', () => { K.dragPayload = null; });
 
+  const opened = K.expandedClosureFolders.has(pathStr);
   const toggle = document.createElement('span');
   toggle.className = 'folder-toggle';
-  toggle.textContent = '▾';
+  toggle.textContent = opened ? '▾' : '▸';
   toggle.onclick = e => {
     e.stopPropagation();
     const ch = row.nextElementSibling;
     if (ch?.classList.contains('folder-children')){
       const collapsed = ch.classList.toggle('collapsed');
       toggle.textContent = collapsed ? '▸' : '▾';
+      if (collapsed) K.expandedClosureFolders.delete(pathStr);
+      else K.expandedClosureFolders.add(pathStr);
     }
   };
 
@@ -1051,6 +1062,7 @@ function closureMakeFolderRow(node, pathStr){
         body: JSON.stringify({ path: `${pathStr}/${sub.trim()}` }),
       });
     } catch (err){ console.warn('closure folder add failed', err); }
+    closureExpandFolder(`${pathStr}/${sub.trim()}`);
     await closuresLoad();
   };
 
@@ -1071,7 +1083,7 @@ function closureMakeFolderRow(node, pathStr){
 
   const wrap = document.createElement('div');
   wrap.className = 'folder-children';
-  if (total === 0 && node.children.size === 0) wrap.classList.add('collapsed');
+  if (!K.expandedClosureFolders.has(pathStr)) wrap.classList.add('collapsed');
 
   return { row, wrap };
 }
@@ -1112,6 +1124,8 @@ function kmzBuildClosureRow(c){
   name.textContent = c.name;
   name.title = `${c.name} · ${Number(c.lat).toFixed(6)}, ${Number(c.lng).toFixed(6)}`;
   name.onclick = () => {
+    closureExpandFolder(c.folder);
+    renderClosureTree();
     map.setView([c.lat, c.lng], Math.max(map.getZoom(), 17), { animate: true });
     const marker = K.closureMarkers.get(c.id);
     if (marker) marker.openPopup();
@@ -1192,6 +1206,7 @@ async function closureFolderDrop(e){
         body: JSON.stringify({ folder: target }),
       });
     } catch (err){ console.warn('closure move failed', err); }
+    if (target) closureExpandFolder(target);
     await closuresLoad();
   } else if (payload.type === 'closure-folder'){
     const src = payload.path;
@@ -1313,6 +1328,7 @@ async function closureAddAt(latlng){
     return;
   }
   K.closures.push(data);
+  closureExpandFolder(data.folder);
   closuresRender();
   kmzRenderTree();
   closureToggle(false);
@@ -3578,6 +3594,7 @@ async function moveClosuresToFolder(){
     alert('Не удалось перенести: ' + (data.error || res.status));
     return;
   }
+  closureExpandFolder(target);
   await closuresLoad();
   alert(`Перенесено муфт: ${data.moved}.`);
 }
