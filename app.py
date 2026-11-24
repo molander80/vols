@@ -1193,6 +1193,31 @@ def closure_delete(cid):
     return jsonify({'ok': True})
 
 
+@app.route('/closures/move', methods=['POST'])
+def closures_move():
+    data = request.get_json() or {}
+    ids = data.get('ids')
+    folder = data.get('folder')
+    if not isinstance(ids, list):
+        return jsonify({'error': 'ids must be a list'}), 400
+    if not isinstance(folder, str) or not folder.strip():
+        return jsonify({'error': 'folder must be a non-empty string'}), 400
+
+    target = _closure_folder(folder)
+    moved = 0
+    for cid in ids:
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            continue
+        if _routes.closure_get(cid) is None:
+            continue
+        _routes.closure_patch(cid, {'folder': target})
+        moved += 1
+    _routes.touch()
+    return jsonify({'ok': True, 'moved': moved, 'folder': target})
+
+
 @app.route('/closures/folders', methods=['GET'])
 def closure_folders_list_route():
     return jsonify(_routes.closure_folders_list())

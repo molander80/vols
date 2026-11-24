@@ -3532,6 +3532,48 @@ for (const [toolId, targetId] of Object.entries(TOOL_BUTTONS)){
   if (el) el.onclick = () => $(targetId).click();
 }
 
+$('btnClosureMove').onclick = async () => {
+  if (!K.closures.length){
+    alert('Муфт пока нет.');
+    return;
+  }
+  const needle = prompt('Перенести муфты, в имени которых есть (например, bdcom-sla2/GPON0/3):', '');
+  if (needle === null) return;
+  const q = needle.trim().toLowerCase();
+  if (!q) return;
+
+  const matches = K.closures.filter(c => (c.name || '').toLowerCase().includes(q));
+  if (!matches.length){
+    alert('Муфты с таким текстом не найдены.');
+    return;
+  }
+
+  const folder = prompt(
+    `Найдено ${matches.length}. Папка назначения (например, Муфты/bdcom-sla2/3):`, '');
+  if (folder === null) return;
+  const target = folder.trim().replace(/^\/+|\/+$/g, '');
+  if (!target) return;
+
+  let res;
+  try {
+    res = await fetch('/closures/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: matches.map(c => c.id), folder: target }),
+    });
+  } catch (e){
+    alert('Не удалось перенести: ' + e.message);
+    return;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok){
+    alert('Не удалось перенести: ' + (data.error || res.status));
+    return;
+  }
+  await closuresLoad();
+  alert(`Перенесено муфт: ${data.moved}.`);
+};
+
 (async function init(){
   // восстанавливаем видимость меток ДО того, как загрузятся данные
   const savedVis = localStorage.getItem('gpon-markers-visible');

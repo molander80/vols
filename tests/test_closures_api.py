@@ -129,6 +129,26 @@ check('папка не строка -> 400', r.status_code == 400, r.get_json())
 r = client.post('/closures/folders', json={'path': ''})
 check('пустая папка -> 400', r.status_code == 400, r.get_json())
 
+print('8) массовый перенос муфт')
+ids = []
+for i in range(3):
+    r = client.post('/closures', json={'name': f'Массовая {i + 1}', 'lat': 45.1, 'lng': 38.1,
+                                       'folder': 'Муфты/A'})
+    ids.append(r.get_json()['id'])
+
+r = client.post('/closures/move', json={'ids': ids[:2], 'folder': 'Муфты/B'})
+check('moved 2', r.get_json().get('moved') == 2, r.get_json())
+cl = {c['id']: c for c in client.get('/closures').get_json()}
+check('папки изменены',
+      cl[ids[0]]['folder'] == 'Муфты/B' and cl[ids[1]]['folder'] == 'Муфты/B',
+      [cl[ids[0]]['folder'], cl[ids[1]]['folder']])
+check('третья не тронута', cl[ids[2]]['folder'] == 'Муфты/A', cl[ids[2]]['folder'])
+
+r = client.post('/closures/move', json={'ids': 'nope', 'folder': 'Муфты/B'})
+check('ids не список -> 400', r.status_code == 400, r.get_json())
+r = client.post('/closures/move', json={'ids': ids, 'folder': '   '})
+check('пустая папка -> 400', r.status_code == 400, r.get_json())
+
 server._routes.saver.cancel()
 print()
 if failures:
