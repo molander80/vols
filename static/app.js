@@ -246,6 +246,8 @@ const K = {
   closuresHidden: new Set(),
   closureMarkers: new Map(),
   closureMode: false,
+  closureEdit: false,
+  closureUndo: new Map(),
 };
 
 const G = {
@@ -972,6 +974,7 @@ function kmzDrawStart(){
   if (K.draw) return;
   if (K.editGeom) kmzGeomCancel();
   if (K.closureMode) closureToggle(false);
+  if (K.closureEdit) closureEditToggle(false);
   if (K.linked) kmzClearLink(false);
   K.draw = { segments: [], pending: null, line: null, dots: null };
   map.doubleClickZoom.disable();
@@ -1062,10 +1065,14 @@ function closureIcon(){
 }
 
 function closurePopupHtml(c){
+  const undo = K.closureUndo.has(c.id)
+    ? '<button type="button" data-act="undo">↩ Вернуть</button>'
+    : '';
   return `<div class="onu-popup closure-popup">
     <div><b>${esc(c.name)}</b></div>
     <div style="margin-top:6px">
       <button type="button" data-act="rename">✏️ Имя</button>
+      ${undo}
       <button type="button" data-act="delete">🗑 Удалить</button>
     </div>
   </div>`;
@@ -1388,7 +1395,7 @@ async function closureFolderDrop(e){
 }
 function closuresAddMarker(c){
   const marker = L.marker([c.lat, c.lng], {
-    icon: closureIcon(), draggable: true, zIndexOffset: 500, keyboard: false,
+    icon: closureIcon(), draggable: !!K.closureEdit, zIndexOffset: 500, keyboard: false,
   }).addTo(closuresLayer);
 
   K.closureMarkers.set(c.id, marker);
@@ -1397,6 +1404,7 @@ function closuresAddMarker(c){
 
   marker.on('dragend', async () => {
     const ll = marker.getLatLng();
+    K.closureUndo.set(c.id, { lat: c.lat, lng: c.lng });
     c.lat = ll.lat;
     c.lng = ll.lng;
     try {
@@ -1430,11 +1438,27 @@ function closuresAddMarker(c){
         marker.closePopup();
         closuresRender();
         kmzRenderTree();
+      } else if (btn.dataset.act === 'undo'){
+        const old = K.closureUndo.get(c.id);
+        if (!old) return;
+        c.lat = old.lat;
+        c.lng = old.lng;
+        K.closureUndo.delete(c.id);
+        try {
+          await fetch(`/closures/${c.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: c.lat, lng: c.lng }),
+          });
+        } catch (err){ console.warn('closure undo failed', err); }
+        marker.closePopup();
+        closuresRender();
       } else if (btn.dataset.act === 'delete'){
         if (!confirm(`Удалить муфту "${c.name}"?`)) return;
         try { await fetch(`/closures/${c.id}`, { method: 'DELETE' }); }
         catch (e){ console.warn('closure delete failed', e); }
         K.closures = K.closures.filter(x => x.id !== c.id);
+        K.closureUndo.delete(c.id);
         marker.closePopup();
         closuresRender();
         kmzRenderTree();
@@ -1461,6 +1485,7 @@ function closureToggle(on){
   if (K.closureMode){
     if (K.draw) kmzDrawStop();
     if (K.editGeom) kmzGeomCancel();
+    if (K.closureEdit) closureEditToggle(false);
   }
   const btn = $('btnAddClosure');
   if (btn){
@@ -1470,6 +1495,22 @@ function closureToggle(on){
       : 'Поставить муфту на карту';
   }
   map.getContainer().style.cursor = K.closureMode ? 'crosshair' : '';
+}
+
+function closureEditToggle(on){
+  K.closureEdit = typeof on === 'boolean' ? on : !K.closureEdit;
+  if (K.closureEdit && K.closureMode) closureToggle(false);
+  const btn = $('btnClosureEdit');
+  if (btn){
+    btn.classList.toggle('active', K.closureEdit);
+    btn.title = K.closureEdit
+      ? 'Режим перемещения включён: тяните маркеры муфт, Esc — выключить'
+      : 'Перемещать муфты по карте';
+  }
+  map.getContainer().style.cursor = K.closureMode
+    ? 'crosshair'
+    : (K.closureEdit ? 'move' : '');
+  closuresRender();
 }
 
 async function closureAddAt(latlng){
@@ -1680,6 +1721,7 @@ function kmzGeomBegin(routeId, { append = false } = {}){
   if (K.draw) kmzDrawStop();
   if (K.editGeom) kmzGeomCancel();
   if (K.closureMode) closureToggle(false);
+  if (K.closureEdit) closureEditToggle(false);
   if (K.linked) kmzClearLink(false);
 
   const segments = kmzRouteSegments(r).map(seg => seg.map(p => [p[0], p[1]]));
@@ -3350,8 +3392,9 @@ document.addEventListener('keydown', (e) => {
 
 // вне режимов Ctrl+Z откатывает последнее сохранение геометрии
 document.addEventListener('keydown', (e) => {
-  if (!K.closureMode) return;
-  if (e.key === 'Escape'){ e.preventDefault(); closureToggle(false); }
+  if (e.key !== 'Escape') return;
+  if (K.closureMode){ e.preventDefault(); closureToggle(false); }
+  else if (K.closureEdit){ e.preventDefault(); closureEditToggle(false); }
 });
 
 document.addEventListener('keydown', (e) => {
@@ -3759,6 +3802,8 @@ for (const [toolId, targetId] of Object.entries(TOOL_BUTTONS)){
   const el = $(toolId);
   if (el) el.onclick = () => $(targetId).click();
 }
+
+$('btnClosureEdit').onclick = () => closureEditToggle();
 
 async function moveClosuresToFolder(){
   if (!K.closures.length){
