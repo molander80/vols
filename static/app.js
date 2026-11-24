@@ -73,6 +73,8 @@ const K = {
   geomUndoStack: [],
   snap: true,
   closures: [],
+  closuresHidden: new Set(),
+  closureMarkers: new Map(),
   closureMode: false,
 };
 
@@ -375,6 +377,7 @@ function kmzRenderTree(){
   const c = $('folderTree');
   if (!c) return;
   c.innerHTML = '';
+  kmzRenderClosures(c);
   kmzRenderNode(kmzBuildTree(), c, [], true);
 
   if (K.linked?.type === 'route'){
@@ -898,7 +901,111 @@ function closurePopupHtml(c){
 
 function closuresRender(){
   closuresLayer.clearLayers();
-  for (const c of K.closures) closuresAddMarker(c);
+  K.closureMarkers.clear();
+  for (const c of K.closures){
+    if (K.closuresHidden.has(c.id)) continue;
+    closuresAddMarker(c);
+  }
+}
+
+function kmzRenderClosures(container){
+  if (!K.closures.length) return;
+
+  const total = K.closures.length;
+  const visible = K.closures.filter(c => !K.closuresHidden.has(c.id)).length;
+
+  const head = document.createElement('div');
+  head.className = 'folder-row closure-head-row';
+  head.innerHTML = `<span class="folder-toggle">▾</span>` +
+    `<input type="checkbox" class="folder-cb">` +
+    `<span class="folder-name">📍 Муфты</span>` +
+    `<span class="folder-count">${visible}/${total}</span>`;
+
+  const toggle = head.querySelector('.folder-toggle');
+  const cb = head.querySelector('.folder-cb');
+  const list = document.createElement('div');
+  list.className = 'folder-children';
+
+  cb.checked = visible === total;
+  cb.indeterminate = visible > 0 && visible < total;
+  cb.onclick = e => {
+    e.stopPropagation();
+    for (const c of K.closures){
+      if (cb.checked) K.closuresHidden.delete(c.id);
+      else K.closuresHidden.add(c.id);
+    }
+    closuresRender();
+    kmzRenderTree();
+  };
+  toggle.onclick = e => {
+    e.stopPropagation();
+    const collapsed = list.classList.toggle('collapsed');
+    toggle.textContent = collapsed ? '▸' : '▾';
+  };
+
+  for (const c of K.closures) list.appendChild(kmzBuildClosureRow(c));
+  container.append(head, list);
+}
+
+function kmzBuildClosureRow(c){
+  const row = document.createElement('div');
+  row.className = 'route-row closure-row';
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'folder-cb';
+  cb.checked = !K.closuresHidden.has(c.id);
+  cb.onclick = e => {
+    e.stopPropagation();
+    if (cb.checked) K.closuresHidden.delete(c.id);
+    else K.closuresHidden.add(c.id);
+    closuresRender();
+    kmzRenderTree();
+  };
+
+  const name = document.createElement('span');
+  name.className = 'route-name';
+  name.textContent = c.name;
+  name.title = `${c.name} · ${Number(c.lat).toFixed(6)}, ${Number(c.lng).toFixed(6)}`;
+  name.onclick = () => {
+    map.setView([c.lat, c.lng], Math.max(map.getZoom(), 17), { animate: true });
+    const marker = K.closureMarkers.get(c.id);
+    if (marker) marker.openPopup();
+  };
+
+  const actions = document.createElement('span');
+  actions.className = 'route-actions';
+  actions.innerHTML = `<button data-act="rename" title="Переименовать">✏️</button>` +
+    `<button data-act="delete" title="Удалить">✕</button>`;
+
+  actions.querySelector('[data-act="rename"]').onclick = async e => {
+    e.stopPropagation();
+    const nn = prompt('Название муфты:', c.name);
+    if (!nn || !nn.trim()) return;
+    c.name = nn.trim();
+    try {
+      await fetch(`/closures/${c.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: c.name }),
+      });
+    } catch (err){ console.warn('closure rename failed', err); }
+    closuresRender();
+    kmzRenderTree();
+  };
+
+  actions.querySelector('[data-act="delete"]').onclick = async e => {
+    e.stopPropagation();
+    if (!confirm(`Удалить муфту "${c.name}"?`)) return;
+    try { await fetch(`/closures/${c.id}`, { method: 'DELETE' }); }
+    catch (err){ console.warn('closure delete failed', err); }
+    K.closures = K.closures.filter(x => x.id !== c.id);
+    closuresRender();
+    kmzRenderTree();
+  };
+
+  row.append(cb, name, actions);
+  return row;
 }
 
 function closuresAddMarker(c){
@@ -906,6 +1013,7 @@ function closuresAddMarker(c){
     icon: closureIcon(), draggable: true, zIndexOffset: 500, keyboard: false,
   }).addTo(closuresLayer);
 
+  K.closureMarkers.set(c.id, marker);
   marker.bindTooltip(c.name, { sticky: true });
   marker.bindPopup(closurePopupHtml(c), { closeButton: false, offset: [0, -6] });
 
@@ -943,6 +1051,7 @@ function closuresAddMarker(c){
         } catch (e){ console.warn('closure rename failed', e); }
         marker.closePopup();
         closuresRender();
+        kmzRenderTree();
       } else if (btn.dataset.act === 'delete'){
         if (!confirm(`Удалить муфту "${c.name}"?`)) return;
         try { await fetch(`/closures/${c.id}`, { method: 'DELETE' }); }
@@ -950,6 +1059,7 @@ function closuresAddMarker(c){
         K.closures = K.closures.filter(x => x.id !== c.id);
         marker.closePopup();
         closuresRender();
+        kmzRenderTree();
       }
     });
   });
@@ -960,6 +1070,7 @@ async function closuresLoad(){
     const res = await fetch('/closures');
     K.closures = await res.json();
     closuresRender();
+    kmzRenderTree();
   } catch (e){ console.warn('closures load failed', e); }
 }
 
@@ -1006,6 +1117,7 @@ async function closureAddAt(latlng){
   }
   K.closures.push(data);
   closuresRender();
+  kmzRenderTree();
   closureToggle(false);
 }
 
