@@ -218,6 +218,17 @@ class TestRoutesValidation(unittest.TestCase):
         self.assertIsNotNone(app._validate_routes_state(payload))
 
 
+    def test_valid_closures(self):
+        payload = {'routes': [], 'closures': [
+            {'id': 1, 'name': 'Муфта', 'lat': 45.0, 'lng': 38.0}]}
+        self.assertIsNone(app._validate_routes_state(payload))
+
+    def test_bad_closures(self):
+        payload = {'routes': [], 'closures': [
+            {'id': 1, 'name': 'Муфта', 'lat': 'x', 'lng': 38.0}]}
+        self.assertIsNotNone(app._validate_routes_state(payload))
+
+
 class TestGponValidation(unittest.TestCase):
     def test_valid_payload(self):
         payload = {'geo': {}, 'onus': [], 'geoFiles': [], 'vgFile': None}

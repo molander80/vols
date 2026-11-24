@@ -72,6 +72,8 @@ const K = {
   snapHint: null,
   geomUndoStack: [],
   snap: true,
+  closures: [],
+  closureMode: false,
 };
 
 const G = {
@@ -794,6 +796,7 @@ function kmzDrawRender(){
 function kmzDrawStart(){
   if (K.draw) return;
   if (K.editGeom) kmzGeomCancel();
+  if (K.closureMode) closureToggle(false);
   if (K.linked) kmzClearLink(false);
   K.draw = { segments: [], pending: null, line: null, dots: null };
   map.doubleClickZoom.disable();
@@ -870,6 +873,142 @@ async function kmzDrawSave(){
   kmzDrawStop();
   await kmzLoadRoutes({ fit: false });
 }
+/* ==========================================================================
+   KMZ — МУФТЫ (точки на карте)
+   ========================================================================== */
+const closuresLayer = L.layerGroup().addTo(map);
+
+function closureIcon(){
+  return L.divIcon({
+    className: 'closure-marker',
+    html: '<div class="closure-dot"></div>',
+    iconSize: [16, 16], iconAnchor: [8, 8],
+  });
+}
+
+function closurePopupHtml(c){
+  return `<div class="onu-popup closure-popup">
+    <div><b>${esc(c.name)}</b></div>
+    <div style="margin-top:6px">
+      <button type="button" data-act="rename">✏️ Имя</button>
+      <button type="button" data-act="delete">🗑 Удалить</button>
+    </div>
+  </div>`;
+}
+
+function closuresRender(){
+  closuresLayer.clearLayers();
+  for (const c of K.closures) closuresAddMarker(c);
+}
+
+function closuresAddMarker(c){
+  const marker = L.marker([c.lat, c.lng], {
+    icon: closureIcon(), draggable: true, zIndexOffset: 500, keyboard: false,
+  }).addTo(closuresLayer);
+
+  marker.bindTooltip(c.name, { sticky: true });
+  marker.bindPopup(closurePopupHtml(c), { closeButton: false, offset: [0, -6] });
+
+  marker.on('dragend', async () => {
+    const ll = marker.getLatLng();
+    c.lat = ll.lat;
+    c.lng = ll.lng;
+    try {
+      await fetch(`/closures/${c.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat: c.lat, lng: c.lng }),
+      });
+    } catch (e){ console.warn('closure move failed', e); }
+    closuresRender();
+  });
+
+  marker.on('popupopen', () => {
+    const el = marker.getPopup().getElement();
+    if (!el) return;
+    el.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button');
+      if (!btn) return;
+      ev.stopPropagation();
+      if (btn.dataset.act === 'rename'){
+        const nn = prompt('Название муфты:', c.name);
+        if (!nn || !nn.trim()) return;
+        c.name = nn.trim();
+        try {
+          await fetch(`/closures/${c.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: c.name }),
+          });
+        } catch (e){ console.warn('closure rename failed', e); }
+        marker.closePopup();
+        closuresRender();
+      } else if (btn.dataset.act === 'delete'){
+        if (!confirm(`Удалить муфту "${c.name}"?`)) return;
+        try { await fetch(`/closures/${c.id}`, { method: 'DELETE' }); }
+        catch (e){ console.warn('closure delete failed', e); }
+        K.closures = K.closures.filter(x => x.id !== c.id);
+        marker.closePopup();
+        closuresRender();
+      }
+    });
+  });
+}
+
+async function closuresLoad(){
+  try {
+    const res = await fetch('/closures');
+    K.closures = await res.json();
+    closuresRender();
+  } catch (e){ console.warn('closures load failed', e); }
+}
+
+function closureToggle(on){
+  K.closureMode = typeof on === 'boolean' ? on : !K.closureMode;
+  if (K.closureMode){
+    if (K.draw) kmzDrawStop();
+    if (K.editGeom) kmzGeomCancel();
+  }
+  const btn = $('btnAddClosure');
+  if (btn){
+    btn.classList.toggle('active', K.closureMode);
+    btn.title = K.closureMode
+      ? 'Кликните по карте, чтобы поставить муфту (Esc — отмена)'
+      : 'Поставить муфту на карту';
+  }
+  map.getContainer().style.cursor = K.closureMode ? 'crosshair' : '';
+}
+
+async function closureAddAt(latlng){
+  const def = `Муфта ${K.closures.length + 1}`;
+  const name = prompt('Название муфты:', def);
+  if (name === null) return;
+
+  let res;
+  try {
+    res = await fetch('/closures', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: (name || '').trim() || def,
+        lat: latlng.lat,
+        lng: latlng.lng,
+      }),
+    });
+  } catch (e){
+    alert('Не удалось добавить муфту: ' + e.message);
+    return;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok){
+    alert('Не удалось добавить муфту: ' + (data.error || res.status));
+    return;
+  }
+  K.closures.push(data);
+  closuresRender();
+  closureToggle(false);
+}
+
 /* ==========================================================================
    KMZ — РЕДАКТИРОВАНИЕ ГЕОМЕТРИИ (сеть отрезков)
    ========================================================================== */
@@ -1045,6 +1184,7 @@ function kmzGeomBegin(routeId, { append = false } = {}){
   if (!r) return;
   if (K.draw) kmzDrawStop();
   if (K.editGeom) kmzGeomCancel();
+  if (K.closureMode) closureToggle(false);
   if (K.linked) kmzClearLink(false);
 
   const segments = kmzRouteSegments(r).map(seg => seg.map(p => [p[0], p[1]]));
@@ -2538,6 +2678,11 @@ function gponSetMarkersVisible(visible){
    MAP — click handler
    ========================================================================== */
 map.on('click', (e) => {
+  if (K.closureMode){
+    L.DomEvent.stopPropagation(e);
+    closureAddAt(e.latlng);
+    return;
+  }
   if (K.draw){
     kmzDrawAddPoint(e.latlng);
     return;
@@ -2595,6 +2740,11 @@ document.addEventListener('keydown', (e) => {
 
 // вне режимов Ctrl+Z откатывает последнее сохранение геометрии
 document.addEventListener('keydown', (e) => {
+  if (!K.closureMode) return;
+  if (e.key === 'Escape'){ e.preventDefault(); closureToggle(false); }
+});
+
+document.addEventListener('keydown', (e) => {
   if (K.draw || K.editGeom) return;
   if (!K.geomUndoStack.length) return;
   const tag = (e.target?.tagName || '').toLowerCase();
@@ -2612,6 +2762,8 @@ $('btnUploadFiles').onclick = () => $('fileInput').click();
 $('btnDraw').onclick = () => { if (K.draw) kmzDrawSave(); else kmzDrawStart(); };
 $('btnSnap').onclick = () => kmzSnapToggle();
 kmzSnapPaint();
+
+$('btnAddClosure').onclick = () => closureToggle();
 
 $('btnMerge').onclick = async () => {
   const ids = [...K.mergeMarked];
@@ -2944,6 +3096,7 @@ $('btnMarkersVis').onclick = () => gponSetMarkersVisible(!G.markersVisible);
 
   await kmzLoadRoutes();
   await kmzLoadFolders();
+  await closuresLoad();
   await gponLoadState();
   setMode('kmz');
   $('s-found').textContent = '—';

@@ -366,6 +366,7 @@ class RoutesStore:
     def __init__(self):
         self._lock = threading.RLock()
         self.routes = {}
+        self.closures = {}
         self.custom_folders = set()
         self._next_id = 1
         self.saver = DebouncedSaver(STATE_FILE, self._payload)
@@ -379,6 +380,7 @@ class RoutesStore:
                 'next_id': self._next_id,
                 'customFolders': sorted(self.custom_folders),
                 'routes': copy.deepcopy(list(self.routes.values())),
+                'closures': copy.deepcopy(list(self.closures.values())),
             }
 
     def load(self):
@@ -405,6 +407,22 @@ class RoutesStore:
                     'folder': r.get('folder', ''),
                     'visible': bool(r.get('visible', True)),
                     'segments': _route_segments(r),
+                }
+            self.closures = {}
+            for c in payload.get('closures', []) or []:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    cid = int(c['id'])
+                    lat = float(c['lat'])
+                    lng = float(c['lng'])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                self.closures[cid] = {
+                    'id': cid,
+                    'name': (c.get('name') or 'Муфта').strip() or 'Муфта',
+                    'lat': lat,
+                    'lng': lng,
                 }
             self.custom_folders = set(payload.get('customFolders', []))
             self._next_id = int(payload.get(
@@ -447,6 +465,37 @@ class RoutesStore:
     def pop(self, rid):
         with self._lock:
             return self.routes.pop(rid, None)
+
+    # --- муфты (точки) ---
+    def closures_list(self):
+        with self._lock:
+            return list(self.closures.values())
+
+    def closure_get(self, cid):
+        with self._lock:
+            return self.closures.get(cid)
+
+    def closure_add(self, name, lat, lng):
+        with self._lock:
+            cid = self._next_id
+            self._next_id += 1
+            closure = {'id': cid, 'name': name, 'lat': lat, 'lng': lng}
+            self.closures[cid] = closure
+            return closure
+
+    def closure_patch(self, cid, data):
+        with self._lock:
+            c = self.closures.get(cid)
+            if not c:
+                return None
+            for key in ('name', 'lat', 'lng'):
+                if key in data:
+                    c[key] = data[key]
+            return c
+
+    def closure_pop(self, cid):
+        with self._lock:
+            return self.closures.pop(cid, None)
 
     # --- folders ---
     def folders_list(self):
@@ -995,6 +1044,65 @@ def delete_route(rid):
     return jsonify({'ok': True})
 
 
+def _validate_closure(data):
+    """Проверяет точку муфты: имя, широта, долгота."""
+    try:
+        lat = float(data.get('lat'))
+        lng = float(data.get('lng'))
+    except (TypeError, ValueError):
+        return None, 'lat/lng must be numbers'
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+        return None, 'lat/lng out of range'
+    name = (data.get('name') or '').strip() or 'Муфта'
+    return (name, lat, lng), None
+
+
+@app.route('/closures', methods=['GET'])
+def closures_list_route():
+    return jsonify(_routes.closures_list())
+
+
+@app.route('/closures', methods=['POST'])
+def closure_create():
+    data = request.get_json() or {}
+    parsed, error = _validate_closure(data)
+    if error:
+        return jsonify({'error': error}), 400
+    name, lat, lng = parsed
+    closure = _routes.closure_add(name, lat, lng)
+    _routes.touch()
+    return jsonify(closure), 201
+
+
+@app.route('/closures/<int:cid>', methods=['PATCH'])
+def closure_update(cid):
+    current = _routes.closure_get(cid)
+    if not current:
+        return jsonify({'error': 'not found'}), 404
+
+    data = request.get_json() or {}
+    merged = {
+        'name': data.get('name', current['name']),
+        'lat': data.get('lat', current['lat']),
+        'lng': data.get('lng', current['lng']),
+    }
+    parsed, error = _validate_closure(merged)
+    if error:
+        return jsonify({'error': error}), 400
+
+    name, lat, lng = parsed
+    closure = _routes.closure_patch(cid, {'name': name, 'lat': lat, 'lng': lng})
+    _routes.touch()
+    return jsonify(closure)
+
+
+@app.route('/closures/<int:cid>', methods=['DELETE'])
+def closure_delete(cid):
+    if _routes.closure_pop(cid) is not None:
+        _routes.touch()
+    return jsonify({'ok': True})
+
+
 @app.route('/merge', methods=['POST'])
 def merge():
     data = request.get_json() or {}
@@ -1067,6 +1175,13 @@ def export():
             for seg in segments:
                 ls = mg.newlinestring()
                 ls.coords = [(p[1], p[0]) for p in seg]
+
+    closures = _routes.closures_list()
+    if closures:
+        cfol = kml.newfolder(name='Муфты')
+        for c in closures:
+            pt = cfol.newpoint(name=c['name'])
+            pt.coords = [(c['lng'], c['lat'])]
 
     buf = io.BytesIO()
     kml.savekmz(buf)
@@ -1276,6 +1391,18 @@ def _validate_routes_state(payload: dict):
     folders = payload.get('customFolders', [])
     if not isinstance(folders, list) or any(not isinstance(x, str) for x in folders):
         return 'customFolders must be a list of strings'
+
+    closures = payload.get('closures', [])
+    if not isinstance(closures, list):
+        return 'closures must be a list'
+    for i, c in enumerate(closures):
+        if not isinstance(c, dict):
+            return f'closures[{i}] must be an object'
+        try:
+            float(c['lat'])
+            float(c['lng'])
+        except (KeyError, TypeError, ValueError):
+            return f'closures[{i}] must have numeric lat/lng'
     return None
 
 

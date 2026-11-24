@@ -234,6 +234,12 @@ button,input,select{font:inherit;color:inherit}
   border:2px solid var(--bg);box-shadow:0 1px 3px rgba(0,0,0,.6)}
 .geom-dot.sel{background:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,.35)}
 
+/* Муфты — точки на карте */
+.closure-marker{background:none;border:none}
+.closure-dot{width:16px;height:16px;border-radius:4px;background:var(--switch);
+  border:2px solid var(--bg);box-shadow:0 1px 3px rgba(0,0,0,.6);transform:rotate(45deg)}
+.closure-marker .leaflet-tooltip{white-space:nowrap}
+
 /* Кольцо привязки к вершине или сегменту */
 .snap-ring{width:14px;height:14px;border-radius:50%;border:2px solid var(--switch);
   background:rgba(251,191,36,.15);box-shadow:0 0 0 3px rgba(251,191,36,.25)}
@@ -333,6 +339,7 @@ button,input,select{font:inherit;color:inherit}
       <button class="btn" id="btnMerge" title="Объединить отмеченные маршруты в один">🧩 Объединить</button>
       <button class="btn" id="btnRenameMask" title="Массовое переименование: отмеченные или найденные по тексту">🏷 Имена</button>
       <button class="btn" id="btnMoveToFolder" title="Перенести отмеченные или найденные по тексту маршруты в папку">📁→ В папку</button>
+      <button class="btn" id="btnAddClosure" title="Поставить муфту на карту">📍 Муфта</button>
       <button class="btn" id="btnExport">💾 KMZ</button>
       <button class="btn" id="btnExportTree" title="Сохранить дерево маршрутов на диск (uploads/tree/)">📥 Выгрузить дерево</button>
       <input type="file" id="fileInput" multiple accept=".kmz,.kml" style="display:none">
