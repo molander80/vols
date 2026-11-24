@@ -93,6 +93,8 @@ const G = {
   vgFile: '',
   editMode: null,
   markersVisible: true,
+  expandedFolders: new Set(),
+  expandedBeforeSearch: null,
 };
 
 /* ==========================================================================
@@ -1968,13 +1970,12 @@ function kmzLinkRoute(routeId){
   document.querySelectorAll(
     '#filter-branch-list .branch-group, #filter-branch-list .branch-subgroup, #filter-branch-list .branch-subsub'
   ).forEach(p => {
-    if (p.classList.contains('collapsed')){
-      p.classList.remove('collapsed');
-      const tt = p.querySelector(':scope > .branch-group-head .toggle-g, '
-                              + ':scope > .branch-subgroup-head .toggle-s, '
-                              + ':scope > .branch-subsub-head .toggle-ss');
-      if (tt) tt.textContent = '▾';
-    }
+    p.classList.remove('collapsed');
+    const tt = p.querySelector(':scope > .branch-group-head .toggle-g, '
+                            + ':scope > .branch-subgroup-head .toggle-s, '
+                            + ':scope > .branch-subsub-head .toggle-ss');
+    if (tt) tt.textContent = '▾';
+    if (p.dataset.key) G.expandedFolders.add(p.dataset.key);
   });
 }
 
@@ -2580,13 +2581,12 @@ function gponHighlightBranchInTree(branch){
 
   let p = target.parentElement;
   while (p && p !== root){
-    if (p.classList.contains('collapsed')){
-      p.classList.remove('collapsed');
-      const tt = p.querySelector(':scope > .branch-group-head .toggle-g, '
-                              + ':scope > .branch-subgroup-head .toggle-s, '
-                              + ':scope > .branch-subsub-head .toggle-ss');
-      if (tt) tt.textContent = '▾';
-    }
+    p.classList.remove('collapsed');
+    const tt = p.querySelector(':scope > .branch-group-head .toggle-g, '
+                            + ':scope > .branch-subgroup-head .toggle-s, '
+                            + ':scope > .branch-subsub-head .toggle-ss');
+    if (tt) tt.textContent = '▾';
+    if (p.dataset.key) G.expandedFolders.add(p.dataset.key);
     p = p.parentElement;
   }
   try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(_) {}
@@ -2747,21 +2747,26 @@ function renderBranchGroup(gname, subs){
 
   const gEl = document.createElement('div');
   gEl.className = 'branch-group';
+  gEl.dataset.key = 'g:' + gname;
+  const gOpen = G.expandedFolders.has(gEl.dataset.key);
+  if (!gOpen) gEl.classList.add('collapsed');
   gEl.innerHTML = `<label class="branch-group-head">
     <input type="checkbox" class="group-check" data-group="${esc(gname)}">
-    <span class="toggle-g">▸</span>
+    <span class="toggle-g">${gOpen ? '▾' : '▸'}</span>
     <span class="g-name">${esc(gname)}</span>
     <span class="g-cnt">${gB} / ${gO}</span></label>`;
   const gList = document.createElement('div');
   gList.className = 'branch-group-list';
 
   const sortedSubs = [...subs.keys()].sort((a, b) => a.localeCompare(b, 'ru'));
-  for (const sname of sortedSubs) gList.appendChild(renderBranchSubgroup(sname, subs.get(sname)));
+  for (const sname of sortedSubs){
+    gList.appendChild(renderBranchSubgroup(sname, subs.get(sname), gname));
+  }
   gEl.appendChild(gList);
   return gEl;
 }
 
-function renderBranchSubgroup(sname, ssMap){
+function renderBranchSubgroup(sname, ssMap, gname){
   let sB = 0, sO = 0;
   ssMap.forEach(arr => {
     sB += arr.length;
@@ -2770,9 +2775,12 @@ function renderBranchSubgroup(sname, ssMap){
 
   const sEl = document.createElement('div');
   sEl.className = 'branch-subgroup';
+  sEl.dataset.key = `s:${gname}/${sname}`;
+  const sOpen = G.expandedFolders.has(sEl.dataset.key);
+  if (!sOpen) sEl.classList.add('collapsed');
   sEl.innerHTML = `<label class="branch-subgroup-head">
     <input type="checkbox" class="subgroup-check" data-subgroup="${esc(sname)}">
-    <span class="toggle-s">▸</span>
+    <span class="toggle-s">${sOpen ? '▾' : '▸'}</span>
     <span class="s-name">${esc(sname)}</span>
     <span class="s-cnt">${sB} / ${sO}</span></label>`;
   const sList = document.createElement('div');
@@ -2784,21 +2792,24 @@ function renderBranchSubgroup(sname, ssMap){
       for (const { branch, cnt } of ssMap.get(ssname)) sList.appendChild(renderBranchLeaf(branch, cnt));
       continue;
     }
-    sList.appendChild(renderBranchSubsub(ssname, ssMap.get(ssname)));
+    sList.appendChild(renderBranchSubsub(ssname, ssMap.get(ssname), sEl.dataset.key));
   }
   sEl.appendChild(sList);
   return sEl;
 }
 
-function renderBranchSubsub(ssname, items){
+function renderBranchSubsub(ssname, items, sKey){
   let ssO = 0;
   for (const { cnt } of items) ssO += cnt;
 
   const ss = document.createElement('div');
   ss.className = 'branch-subsub';
+  ss.dataset.key = `ss:${sKey}/${ssname}`;
+  const ssOpen = G.expandedFolders.has(ss.dataset.key);
+  if (!ssOpen) ss.classList.add('collapsed');
   ss.innerHTML = `<label class="branch-subsub-head">
     <input type="checkbox" class="subsub-check" data-subsub="${esc(ssname)}">
-    <span class="toggle-ss">▸</span>
+    <span class="toggle-ss">${ssOpen ? '▾' : '▸'}</span>
     <span class="ss-name">${esc(ssname)}</span>
     <span class="ss-cnt">${items.length} / ${ssO}</span></label>`;
   const ssList = document.createElement('div');
@@ -2843,8 +2854,13 @@ function gponFilterClick(e){
   e.preventDefault(); e.stopPropagation();
   const block = head.parentElement;
   block.classList.toggle('collapsed');
+  const collapsed = block.classList.contains('collapsed');
   const tt = head.querySelector('.toggle-g, .toggle-s, .toggle-ss');
-  if (tt) tt.textContent = block.classList.contains('collapsed') ? '▸' : '▾';
+  if (tt) tt.textContent = collapsed ? '▸' : '▾';
+  if (block.dataset.key){
+    if (collapsed) G.expandedFolders.delete(block.dataset.key);
+    else G.expandedFolders.add(block.dataset.key);
+  }
 }
 
 function gponFilterChange(e){
@@ -2924,6 +2940,26 @@ function gponSearch(q){
       sub.style.display = subAny ? '' : 'none';
     }
     group.style.display = any ? '' : 'none';
+  }
+
+  if (q){
+    if (!G.expandedBeforeSearch){
+      G.expandedBeforeSearch = new Set(G.expandedFolders);
+    }
+    root.querySelectorAll('.branch-group, .branch-subgroup, .branch-subsub').forEach(p => {
+      p.classList.remove('collapsed');
+      const tt = p.querySelector('.toggle-g, .toggle-s, .toggle-ss');
+      if (tt) tt.textContent = '▾';
+    });
+  } else if (G.expandedBeforeSearch){
+    G.expandedFolders = G.expandedBeforeSearch;
+    G.expandedBeforeSearch = null;
+    root.querySelectorAll('.branch-group, .branch-subgroup, .branch-subsub').forEach(p => {
+      const collapsed = p.dataset.key ? !G.expandedFolders.has(p.dataset.key) : false;
+      p.classList.toggle('collapsed', collapsed);
+      const tt = p.querySelector('.toggle-g, .toggle-s, .toggle-ss');
+      if (tt) tt.textContent = collapsed ? '▸' : '▾';
+    });
   }
 
   if (G.searchHighlightLayer){ map.removeLayer(G.searchHighlightLayer); G.searchHighlightLayer = null; }
