@@ -89,6 +89,46 @@ check('closures в файле', len(saved.get('closures', [])) == 1, saved.get('
 check('поля сохранены', saved['closures'][0]['name'] == 'Муфта A',
       saved['closures'][0])
 
+print('7) папки муфт')
+r = client.post('/closures', json={'name': 'В папке', 'lat': 45.6, 'lng': 38.6,
+                                   'folder': 'Муфты/Голова 7'})
+body = r.get_json()
+check('папка сохранена', body.get('folder') == 'Муфты/Голова 7', body.get('folder'))
+folders = client.get('/closures/folders').get_json()
+check('папки в списке', 'Муфты' in folders and 'Муфты/Голова 7' in folders, folders)
+
+r = client.post('/closures/folders', json={'path': 'Муфты/Голова 7/Ветка 1'})
+check('подпапка создана', 'Муфты/Голова 7/Ветка 1' in r.get_json().get('folders', []),
+      r.get_json().get('folders'))
+
+r = client.patch(f"/closures/{body['id']}", json={'folder': 'Муфты/Голова 7/Ветка 1'})
+check('перенос между папками',
+      r.get_json().get('folder') == 'Муфты/Голова 7/Ветка 1', r.get_json())
+
+r = client.post('/closures/folders/rename',
+                json={'old': 'Муфты/Голова 7', 'new': 'Муфты/Голова 8'})
+check('переименование папки', r.status_code == 200, r.get_json())
+folders = client.get('/closures/folders').get_json()
+check('вложенная папка переименована',
+      'Муфты/Голова 8/Ветка 1' in folders, folders)
+cl = client.get('/closures').get_json()
+check('муфта переехала вместе с папкой',
+      any(c.get('folder') == 'Муфты/Голова 8/Ветка 1' for c in cl))
+
+r = client.delete('/closures/folders', json={'path': 'Муфты/Голова 8'})
+check('удаление папки', r.status_code == 200, r.get_json())
+folders = client.get('/closures/folders').get_json()
+check('папка удалена',
+      not any(f.startswith('Муфты/Голова 8') for f in folders), folders)
+cl = client.get('/closures').get_json()
+check('муфты поднялись в родителя',
+      all(not (c.get('folder') or '').startswith('Муфты/Голова 8') for c in cl))
+
+r = client.post('/closures', json={'lat': 45.0, 'lng': 38.0, 'folder': 5})
+check('папка не строка -> 400', r.status_code == 400, r.get_json())
+r = client.post('/closures/folders', json={'path': ''})
+check('пустая папка -> 400', r.status_code == 400, r.get_json())
+
 server._routes.saver.cancel()
 print()
 if failures:

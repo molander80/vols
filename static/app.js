@@ -73,6 +73,7 @@ const K = {
   geomUndoStack: [],
   snap: true,
   closures: [],
+  closureFolders: new Set(),
   closuresHidden: new Set(),
   closureMarkers: new Map(),
   closureMode: false,
@@ -908,53 +909,189 @@ function closuresRender(){
   }
 }
 
+function closureBuildTree(){
+  const root = { name: '', children: new Map(), closures: [] };
+  const ensure = (parts) => {
+    let node = root;
+    for (const part of parts){
+      if (!part) continue;
+      if (!node.children.has(part)){
+        node.children.set(part, { name: part, children: new Map(), closures: [] });
+      }
+      node = node.children.get(part);
+    }
+    return node;
+  };
+  for (const c of K.closures){
+    ensure((c.folder || 'Муфты').split('/').filter(Boolean)).closures.push(c);
+  }
+  for (const f of K.closureFolders){
+    ensure(f.split('/').filter(Boolean));
+  }
+  return root;
+}
+
+function closureCollectClosures(node){
+  const out = [...node.closures];
+  for (const child of node.children.values()) out.push(...closureCollectClosures(child));
+  return out;
+}
+
 function kmzRenderClosures(container){
-  if (!K.closures.length) return;
+  if (!K.closures.length && !K.closureFolders.size) return;
+  const root = closureBuildTree();
+  for (const child of root.children.values()) closureRenderNode(child, container, [], false);
+}
 
-  const total = K.closures.length;
-  const visible = K.closures.filter(c => !K.closuresHidden.has(c.id)).length;
+function closureRenderNode(node, container, parts, isRoot){
+  const path = isRoot ? [] : [...parts, node.name];
+  const pathStr = path.join('/');
+  let inner = container;
+  if (!isRoot && node.name){
+    const { row, wrap } = closureMakeFolderRow(node, pathStr);
+    container.append(row, wrap);
+    inner = wrap;
+  }
+  for (const child of node.children.values()) closureRenderNode(child, inner, path, false);
+  for (const c of node.closures) inner.appendChild(kmzBuildClosureRow(c));
+}
 
-  const head = document.createElement('div');
-  head.className = 'folder-row closure-head-row';
-  head.innerHTML = `<span class="folder-toggle">▾</span>` +
-    `<input type="checkbox" class="folder-cb">` +
-    `<span class="folder-name">📍 Муфты</span>` +
-    `<span class="folder-count">${visible}/${total}</span>`;
+function closureMakeFolderRow(node, pathStr){
+  const closures = closureCollectClosures(node);
+  const total = closures.length;
+  const visible = closures.filter(c => !K.closuresHidden.has(c.id)).length;
 
-  const toggle = head.querySelector('.folder-toggle');
-  const cb = head.querySelector('.folder-cb');
-  const list = document.createElement('div');
-  list.className = 'folder-children';
+  const row = document.createElement('div');
+  row.className = 'folder-row';
+  row.dataset.closureFolder = pathStr;
+  row.draggable = true;
 
-  cb.checked = visible === total;
+  row.addEventListener('dragover', closureFolderDragOver);
+  row.addEventListener('dragleave', e => e.currentTarget.classList.remove('drop-target'));
+  row.addEventListener('drop', closureFolderDrop);
+  row.addEventListener('dragstart', e => {
+    K.dragPayload = { type: 'closure-folder', path: pathStr };
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  row.addEventListener('dragend', () => { K.dragPayload = null; });
+
+  const toggle = document.createElement('span');
+  toggle.className = 'folder-toggle';
+  toggle.textContent = '▾';
+  toggle.onclick = e => {
+    e.stopPropagation();
+    const ch = row.nextElementSibling;
+    if (ch?.classList.contains('folder-children')){
+      const collapsed = ch.classList.toggle('collapsed');
+      toggle.textContent = collapsed ? '▸' : '▾';
+    }
+  };
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'folder-cb';
+  cb.checked = total > 0 && visible === total;
   cb.indeterminate = visible > 0 && visible < total;
+  cb.disabled = total === 0;
+  cb.title = `${visible} из ${total} видимо`;
+  cb.addEventListener('mousedown', e => { e.stopPropagation(); row.draggable = false; });
+  cb.addEventListener('mouseup', e => { e.stopPropagation(); row.draggable = true; });
   cb.onclick = e => {
     e.stopPropagation();
-    for (const c of K.closures){
+    for (const c of closures){
       if (cb.checked) K.closuresHidden.delete(c.id);
       else K.closuresHidden.add(c.id);
     }
     closuresRender();
     kmzRenderTree();
   };
-  toggle.onclick = e => {
+
+  const name = document.createElement('span');
+  name.className = 'folder-name';
+  name.textContent = node.name;
+  name.title = `${node.name} — ${visible}/${total}`;
+  name.onclick = e => { e.stopPropagation(); toggle.onclick(e); };
+
+  const cnt = document.createElement('span');
+  cnt.className = 'folder-count';
+  cnt.textContent = total ? `${visible}/${total}` : '';
+
+  const actions = document.createElement('span');
+  actions.className = 'folder-actions';
+  actions.innerHTML = `
+    <button data-act="closure-rename-folder" title="Переименовать">✏️</button>
+    <button data-act="closure-new-subfolder" title="Подпапка">📁+</button>
+    <button data-act="closure-delete-folder" title="Удалить">🗑</button>`;
+
+  actions.querySelector('[data-act="closure-rename-folder"]').onclick = async e => {
     e.stopPropagation();
-    const collapsed = list.classList.toggle('collapsed');
-    toggle.textContent = collapsed ? '▸' : '▾';
+    const cur = pathStr.split('/').pop();
+    const nn = prompt('Новое имя папки муфт:', cur);
+    if (!nn || !nn.trim() || nn.trim() === cur) return;
+    const parent = pathStr.split('/').slice(0, -1).join('/');
+    const np = parent ? `${parent}/${nn.trim()}` : nn.trim();
+    await closureFolderRename(pathStr, np);
   };
 
-  for (const c of K.closures) list.appendChild(kmzBuildClosureRow(c));
-  container.append(head, list);
+  actions.querySelector('[data-act="closure-new-subfolder"]').onclick = async e => {
+    e.stopPropagation();
+    const sub = prompt('Имя подпапки муфт:');
+    if (!sub || !sub.trim()) return;
+    try {
+      await fetch('/closures/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: `${pathStr}/${sub.trim()}` }),
+      });
+    } catch (err){ console.warn('closure folder add failed', err); }
+    await closuresLoad();
+  };
+
+  actions.querySelector('[data-act="closure-delete-folder"]').onclick = async e => {
+    e.stopPropagation();
+    if (!confirm(`Удалить папку "${pathStr}"? Муфты переместятся в родительскую.`)) return;
+    try {
+      await fetch('/closures/folders', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: pathStr }),
+      });
+    } catch (err){ console.warn('closure folder delete failed', err); }
+    await closuresLoad();
+  };
+
+  row.append(toggle, cb, name, cnt, actions);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'folder-children';
+  if (total === 0 && node.children.size === 0) wrap.classList.add('collapsed');
+
+  return { row, wrap };
 }
 
 function kmzBuildClosureRow(c){
   const row = document.createElement('div');
   row.className = 'route-row closure-row';
+  row.draggable = true;
+
+  row.addEventListener('dragstart', e => {
+    K.dragPayload = { type: 'closure', id: c.id };
+    e.dataTransfer.effectAllowed = 'move';
+    row.classList.add('dragging');
+  });
+  row.addEventListener('dragend', () => {
+    K.dragPayload = null;
+    row.classList.remove('dragging');
+    document.querySelectorAll('.folder-row.drop-target')
+      .forEach(el => el.classList.remove('drop-target'));
+  });
 
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.className = 'folder-cb';
   cb.checked = !K.closuresHidden.has(c.id);
+  cb.addEventListener('mousedown', e => { e.stopPropagation(); row.draggable = false; });
+  cb.addEventListener('mouseup', e => { e.stopPropagation(); row.draggable = true; });
   cb.onclick = e => {
     e.stopPropagation();
     if (cb.checked) K.closuresHidden.delete(c.id);
@@ -1008,6 +1145,55 @@ function kmzBuildClosureRow(c){
   return row;
 }
 
+async function closureFolderRename(oldPath, newPath){
+  try {
+    await fetch('/closures/folders/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old: oldPath, new: newPath }),
+    });
+  } catch (e){ console.warn('closure folder rename failed', e); }
+  await closuresLoad();
+}
+
+function closureFolderDragOver(e){
+  const payload = K.dragPayload;
+  if (!payload) return;
+  if (payload.type !== 'closure' && payload.type !== 'closure-folder') return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drop-target');
+}
+
+async function closureFolderDrop(e){
+  e.preventDefault();
+  e.stopPropagation();
+  e.currentTarget.classList.remove('drop-target');
+  const payload = K.dragPayload;
+  K.dragPayload = null;
+  if (!payload) return;
+
+  const target = e.currentTarget.dataset.closureFolder || '';
+  if (payload.type === 'closure'){
+    const c = K.closures.find(x => x.id === payload.id);
+    if (!c) return;
+    try {
+      await fetch(`/closures/${c.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: target }),
+      });
+    } catch (err){ console.warn('closure move failed', err); }
+    await closuresLoad();
+  } else if (payload.type === 'closure-folder'){
+    const src = payload.path;
+    if (!src || src === target || target.startsWith(src + '/')) return;
+    const base = src.split('/').pop();
+    const np = target ? `${target}/${base}` : base;
+    await closureFolderRename(src, np);
+  }
+}
 function closuresAddMarker(c){
   const marker = L.marker([c.lat, c.lng], {
     icon: closureIcon(), draggable: true, zIndexOffset: 500, keyboard: false,
@@ -1069,6 +1255,10 @@ async function closuresLoad(){
   try {
     const res = await fetch('/closures');
     K.closures = await res.json();
+    try {
+      const folders = await (await fetch('/closures/folders')).json();
+      K.closureFolders = new Set(folders);
+    } catch (_){ K.closureFolders = new Set(); }
     closuresRender();
     kmzRenderTree();
   } catch (e){ console.warn('closures load failed', e); }

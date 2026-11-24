@@ -205,6 +205,14 @@ class DebouncedSaver:
 
 # ============================ Routes store ============================
 
+CLOSURE_ROOT = 'Муфты'
+
+
+def _closure_folder(path):
+    """Нормализует папку муфты: пустая -> корневая «Муфты»."""
+    path = (path or '').strip().strip('/')
+    return path or CLOSURE_ROOT
+
 def _points_to_segments(points):
     """Полилиния -> цепочка отрезков."""
     return [[points[i], points[i + 1]] for i in range(len(points) - 1)]
@@ -367,6 +375,7 @@ class RoutesStore:
         self._lock = threading.RLock()
         self.routes = {}
         self.closures = {}
+        self.closure_folders = set()
         self.custom_folders = set()
         self._next_id = 1
         self.saver = DebouncedSaver(STATE_FILE, self._payload)
@@ -381,6 +390,10 @@ class RoutesStore:
                 'customFolders': sorted(self.custom_folders),
                 'routes': copy.deepcopy(list(self.routes.values())),
                 'closures': copy.deepcopy(list(self.closures.values())),
+                'closureFolders': sorted(
+                    set(self.closure_folders)
+                    | {c.get('folder') or CLOSURE_ROOT for c in self.closures.values()}
+                ),
             }
 
     def load(self):
@@ -408,6 +421,10 @@ class RoutesStore:
                     'visible': bool(r.get('visible', True)),
                     'segments': _route_segments(r),
                 }
+            self.closure_folders = set()
+            for f in payload.get('closureFolders', []) or []:
+                if isinstance(f, str) and f.strip().strip('/'):
+                    self._ensure_closure_folder(f)
             self.closures = {}
             for c in payload.get('closures', []) or []:
                 if not isinstance(c, dict):
@@ -418,11 +435,13 @@ class RoutesStore:
                     lng = float(c['lng'])
                 except (KeyError, TypeError, ValueError):
                     continue
+                folder = self._ensure_closure_folder(c.get('folder'))
                 self.closures[cid] = {
                     'id': cid,
                     'name': (c.get('name') or 'Муфта').strip() or 'Муфта',
                     'lat': lat,
                     'lng': lng,
+                    'folder': folder,
                 }
             self.custom_folders = set(payload.get('customFolders', []))
             self._next_id = int(payload.get(
@@ -475,11 +494,12 @@ class RoutesStore:
         with self._lock:
             return self.closures.get(cid)
 
-    def closure_add(self, name, lat, lng):
+    def closure_add(self, name, lat, lng, folder=None):
         with self._lock:
             cid = self._next_id
             self._next_id += 1
-            closure = {'id': cid, 'name': name, 'lat': lat, 'lng': lng}
+            folder = self._ensure_closure_folder(folder)
+            closure = {'id': cid, 'name': name, 'lat': lat, 'lng': lng, 'folder': folder}
             self.closures[cid] = closure
             return closure
 
@@ -491,7 +511,69 @@ class RoutesStore:
             for key in ('name', 'lat', 'lng'):
                 if key in data:
                     c[key] = data[key]
+            if 'folder' in data:
+                c['folder'] = self._ensure_closure_folder(data['folder'])
             return c
+
+    # --- папки муфт ---
+    def _ensure_closure_folder(self, folder):
+        folder = _closure_folder(folder)
+        parts = folder.split('/')
+        for i in range(1, len(parts) + 1):
+            self.closure_folders.add('/'.join(parts[:i]))
+        return folder
+
+    def closure_folders_list(self):
+        with self._lock:
+            return sorted(
+                set(self.closure_folders)
+                | {c.get('folder') or CLOSURE_ROOT for c in self.closures.values()}
+            )
+
+    def closure_folder_add(self, path):
+        with self._lock:
+            return self._ensure_closure_folder(path)
+
+    def closure_folder_rename(self, old, new):
+        old = (old or '').strip().strip('/')
+        new = (new or '').strip().strip('/')
+        if not old or not new or old == new:
+            return 0
+        with self._lock:
+            moved = 0
+            for c in self.closures.values():
+                folder = c.get('folder') or CLOSURE_ROOT
+                if folder == old or folder.startswith(old + '/'):
+                    c['folder'] = new + folder[len(old):]
+                    moved += 1
+            folders = set()
+            for f in self.closure_folders:
+                if f == old or f.startswith(old + '/'):
+                    folders.add(new + f[len(old):])
+                else:
+                    folders.add(f)
+            self.closure_folders = folders
+            self._ensure_closure_folder(new)
+            return moved
+
+    def closure_folder_delete(self, path):
+        path = (path or '').strip().strip('/')
+        if not path:
+            return 0
+        parent = '/'.join(path.split('/')[:-1]) or CLOSURE_ROOT
+        with self._lock:
+            moved = 0
+            for c in self.closures.values():
+                folder = c.get('folder') or CLOSURE_ROOT
+                if folder == path or folder.startswith(path + '/'):
+                    c['folder'] = parent
+                    moved += 1
+            self.closure_folders = {
+                f for f in self.closure_folders
+                if not (f == path or f.startswith(path + '/'))
+            }
+            self._ensure_closure_folder(parent)
+            return moved
 
     def closure_pop(self, cid):
         with self._lock:
@@ -1069,7 +1151,10 @@ def closure_create():
     if error:
         return jsonify({'error': error}), 400
     name, lat, lng = parsed
-    closure = _routes.closure_add(name, lat, lng)
+    folder = data.get('folder')
+    if folder is not None and not isinstance(folder, str):
+        return jsonify({'error': 'folder must be a string'}), 400
+    closure = _routes.closure_add(name, lat, lng, folder)
     _routes.touch()
     return jsonify(closure), 201
 
@@ -1091,7 +1176,12 @@ def closure_update(cid):
         return jsonify({'error': error}), 400
 
     name, lat, lng = parsed
-    closure = _routes.closure_patch(cid, {'name': name, 'lat': lat, 'lng': lng})
+    patch = {'name': name, 'lat': lat, 'lng': lng}
+    if 'folder' in data:
+        if not isinstance(data['folder'], str):
+            return jsonify({'error': 'folder must be a string'}), 400
+        patch['folder'] = data['folder']
+    closure = _routes.closure_patch(cid, patch)
     _routes.touch()
     return jsonify(closure)
 
@@ -1101,6 +1191,48 @@ def closure_delete(cid):
     if _routes.closure_pop(cid) is not None:
         _routes.touch()
     return jsonify({'ok': True})
+
+
+@app.route('/closures/folders', methods=['GET'])
+def closure_folders_list_route():
+    return jsonify(_routes.closure_folders_list())
+
+
+@app.route('/closures/folders', methods=['POST'])
+def closure_folder_create():
+    data = request.get_json() or {}
+    path = (data.get('path') or '').strip().strip('/')
+    if not path:
+        return jsonify({'error': 'empty path'}), 400
+    _routes.closure_folder_add(path)
+    _routes.touch()
+    return jsonify({'ok': True, 'folders': _routes.closure_folders_list()})
+
+
+@app.route('/closures/folders', methods=['DELETE'])
+def closure_folder_remove():
+    data = request.get_json() or {}
+    path = (data.get('path') or '').strip().strip('/')
+    if not path:
+        return jsonify({'error': 'empty path'}), 400
+    moved = _routes.closure_folder_delete(path)
+    _routes.touch()
+    return jsonify({'ok': True, 'moved': moved, 'folders': _routes.closure_folders_list()})
+
+
+@app.route('/closures/folders/rename', methods=['POST'])
+def closure_folder_rename_route():
+    data = request.get_json() or {}
+    old = (data.get('old') or '').strip().strip('/')
+    new = (data.get('new') or '').strip().strip('/')
+    if not old or not new:
+        return jsonify({'error': 'empty path'}), 400
+    if new == old or new.startswith(old + '/'):
+        return jsonify({'error': 'bad target'}), 400
+    moved = _routes.closure_folder_rename(old, new)
+    _routes.touch()
+    return jsonify({'ok': True, 'moved': moved,
+                    'folders': _routes.closure_folders_list()})
 
 
 @app.route('/merge', methods=['POST'])
@@ -1403,6 +1535,14 @@ def _validate_routes_state(payload: dict):
             float(c['lng'])
         except (KeyError, TypeError, ValueError):
             return f'closures[{i}] must have numeric lat/lng'
+        if 'folder' in c and not isinstance(c['folder'], str):
+            return f'closures[{i}].folder must be a string'
+
+    closure_folders = payload.get('closureFolders', [])
+    if not isinstance(closure_folders, list) or any(
+        not isinstance(x, str) for x in closure_folders
+    ):
+        return 'closureFolders must be a list of strings'
     return None
 
 
