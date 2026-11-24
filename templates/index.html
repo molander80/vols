@@ -375,7 +375,7 @@ button,input,select{font:inherit;color:inherit}
           <div class="menu-sep"></div>
           <button class="menu-item" id="btnMerge" title="Объединить отмеченные маршруты в один">🧩 Объединить</button>
           <button class="menu-item" id="btnRenameMask" title="Массовое переименование: отмеченные или найденные по тексту">🏷 Имена</button>
-          <button class="menu-item" id="btnMoveToFolder" title="Перенести отмеченные или найденные по тексту маршруты в папку">📁→ В папку</button>
+          <button class="menu-item" id="btnMoveToFolder" title="Перенести в папку: на вкладке «Муфты» — муфты по имени, иначе — маршруты">📁→ В папку</button>
         </div>
       </div>
       <button class="btn" id="btnExport">💾 KMZ</button>
@@ -425,9 +425,6 @@ button,input,select{font:inherit;color:inherit}
         </div>
         <div class="side-panel hidden" data-panel="closures">
           <div class="side-title">Муфты</div>
-          <div class="side-tools" style="margin-bottom:8px">
-            <button class="btn" id="btnClosureMove" title="Перенести все муфты с текстом в имени в указанную папку">📁→ В папку по имени</button>
-          </div>
           <div id="closureTree"></div>
         </div>
         <div class="side-panel hidden" data-panel="tools">
@@ -437,7 +434,7 @@ button,input,select{font:inherit;color:inherit}
             <button class="btn" id="btnToolsClosure">📍 Поставить муфту</button>
             <button class="btn" id="btnToolsMerge">🧩 Объединить отмеченные</button>
             <button class="btn" id="btnToolsRename">🏷 Переименовать</button>
-            <button class="btn" id="btnToolsMove">📁→ Перенести в папку</button>
+            <button class="btn" id="btnToolsMove">📁→ Маршруты в папку</button>
             <div class="side-help">Отмечайте маршруты кнопкой ◻ в строках дерева.
               «Рисовать» и «Муфта» работают кликом по карте, Esc — отмена режима.
               Правый клик по карте открывает быстрое меню.</div>

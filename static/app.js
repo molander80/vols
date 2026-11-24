@@ -3185,7 +3185,7 @@ $('btnMerge').onclick = async () => {
   await kmzLoadRoutes({ fit: false });
 };
 
-$('btnMoveToFolder').onclick = async () => {
+async function moveRoutesToFolder(){
   let ids = [...K.mergeMarked];
   if (!ids.length){
     const needle = prompt('Перенести маршруты, в имени которых есть:', 'Муфта');
@@ -3216,8 +3216,16 @@ $('btnMoveToFolder').onclick = async () => {
   await kmzLoadFolders();
   K.mergeMarked.clear();
   kmzRenderTree();
-};
+}
 
+$('btnMoveToFolder').onclick = async () => {
+  const tab = document.querySelector('.side-tab.active')?.dataset.tab;
+  if (tab === 'closures'){
+    await moveClosuresToFolder();
+    return;
+  }
+  await moveRoutesToFolder();
+};
 $('btnRenameMask').onclick = async () => {
   let ids = [...K.mergeMarked];
   if (!ids.length){
@@ -3532,7 +3540,7 @@ for (const [toolId, targetId] of Object.entries(TOOL_BUTTONS)){
   if (el) el.onclick = () => $(targetId).click();
 }
 
-$('btnClosureMove').onclick = async () => {
+async function moveClosuresToFolder(){
   if (!K.closures.length){
     alert('Муфт пока нет.');
     return;
@@ -3572,7 +3580,7 @@ $('btnClosureMove').onclick = async () => {
   }
   await closuresLoad();
   alert(`Перенесено муфт: ${data.moved}.`);
-};
+}
 
 (async function init(){
   // восстанавливаем видимость меток ДО того, как загрузятся данные
