@@ -353,6 +353,9 @@ button,input,select{font:inherit;color:inherit}
 .menu-del{background:none;border:none;cursor:pointer;color:var(--muted);padding:6px 8px;
   border-radius:6px;font-size:13px}
 .menu-del:hover{color:#ef4444}
+.color-dot{display:inline-block;width:12px;height:12px;border-radius:50%;
+  margin-right:8px;vertical-align:-1px;border:1px solid var(--line)}
+.route-row.color-dim{opacity:.35}
 
 .hidden{display:none!important}
 
@@ -411,6 +414,10 @@ button,input,select{font:inherit;color:inherit}
       <button class="btn" id="clear-gpon-data" title="Удалить сохранённые geo и vgroups">🗑 Очистить данные</button>
     </div>
 
+    <div class="dropdown" id="colorsWrap">
+      <button class="btn icon" id="btnColors" title="Фильтр по цвету линий">🎨</button>
+      <div class="dropdown-panel hidden" id="colorsMenu" style="min-width:210px;max-height:360px;overflow:auto"></div>
+    </div>
     <input class="input" id="search" placeholder="🔎 Поиск…">
     <button class="btn icon" id="theme" title="Тема">🌙</button>
     <button class="btn icon" id="btnMarkersVis" title="Скрыть GPON-метки">👁️</button>

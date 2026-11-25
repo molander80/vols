@@ -240,6 +240,7 @@ const K = {
   snap: true,
   localMaps: [],
   baseSel: null,
+  colorFilter: null,
   closures: [],
   closureFolders: new Set(),
   expandedClosureFolders: new Set(),
@@ -475,6 +476,8 @@ function kmzApplyFilters(){
 
     let visible = kmzIsRouteShown(r);
     if (q && !`${r.name} ${r.branch || ''} ${r.folder || ''}`.toLowerCase().includes(q)) visible = false;
+    if (!K.draw && !K.editGeom && K.colorFilter
+        && kmzStringToColor(r.name || '') !== K.colorFilter) visible = false;
 
     if (visible && !map.hasLayer(layer)) layer.addTo(map);
     if (!visible && map.hasLayer(layer)) map.removeLayer(layer);
@@ -668,6 +671,9 @@ function makeFolderRow(node, pathStr){
 function kmzBuildRouteRow(r){
   const li = document.createElement('div');
   li.className = 'route-row';
+  if (K.colorFilter && kmzStringToColor(r.name || '') !== K.colorFilter){
+    li.classList.add('color-dim');
+  }
   li.dataset.id = r.id;
   li.draggable = true;
 
@@ -892,6 +898,7 @@ async function kmzLoadRoutes({ fit = true } = {}){
   if (fit && (wasEmpty || addedCount > 0)) kmzFitAll();
   kmzApplyFilters();
   kmzUpdateTooltips();
+  colorsRenderMenu();
   $('s-routes').textContent = K.routes.length;
 }
 
@@ -3750,6 +3757,84 @@ $('theme').onclick = () =>
 
 $('btnMarkersVis').onclick = () => gponSetMarkersVisible(!G.markersVisible);
 
+/* ==========================================================================
+   KMZ — ФИЛЬТР ПО ЦВЕТУ ЛИНИЙ
+   ========================================================================== */
+function colorsMenuToggle(force){
+  const menu = $('colorsMenu');
+  const btn = $('btnColors');
+  if (!menu || !btn) return;
+  const open = typeof force === 'boolean' ? force : menu.classList.contains('hidden');
+  menu.classList.toggle('hidden', !open);
+  btn.classList.toggle('active', open || !!K.colorFilter);
+}
+
+function colorsSetFilter(color){
+  K.colorFilter = color;
+  kmzApplyFilters();
+  kmzRenderTree();
+  colorsRenderMenu();
+  colorsMenuToggle(false);
+}
+
+function colorsRenderMenu(){
+  const menu = $('colorsMenu');
+  if (!menu) return;
+  menu.innerHTML = '';
+
+  const counts = new Map();
+  for (const r of K.routes){
+    const c = kmzStringToColor(r.name || '');
+    counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const known = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+
+  const caption = document.createElement('div');
+  caption.className = 'menu-caption';
+  caption.textContent = 'Цвета линий';
+  menu.appendChild(caption);
+
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'menu-item' + (K.colorFilter ? '' : ' active');
+  all.textContent = `Все цвета — ${K.routes.length}`;
+  all.onclick = () => colorsSetFilter(null);
+  menu.appendChild(all);
+
+  for (const [color, count] of known){
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'menu-item' + (K.colorFilter === color ? ' active' : '');
+    b.title = color;
+    b.innerHTML = `<span class="color-dot" style="background:${color}"></span>${count} линий`;
+    b.onclick = () => colorsSetFilter(color);
+    menu.appendChild(b);
+  }
+
+  if (K.colorFilter){
+    const sep = document.createElement('div');
+    sep.className = 'menu-sep';
+    menu.appendChild(sep);
+
+    const mark = document.createElement('button');
+    mark.type = 'button';
+    mark.className = 'menu-item';
+    mark.textContent = `◻ Отметить все линии этого цвета (${counts.get(K.colorFilter) || 0})`;
+    mark.onclick = () => {
+      for (const r of K.routes){
+        if (kmzStringToColor(r.name || '') === K.colorFilter) K.mergeMarked.add(r.id);
+      }
+      colorsMenuToggle(false);
+      kmzRenderTree();
+    };
+    menu.appendChild(mark);
+  }
+}
+
+$('btnColors').onclick = e => { e.stopPropagation(); colorsMenuToggle(); };
+document.addEventListener('click', e => {
+  if (!e.target.closest('#colorsWrap')) colorsMenuToggle(false);
+});
 /* ==========================================================================
    UI — меню редактирования, сворачивание панели, вкладки
    ========================================================================== */
